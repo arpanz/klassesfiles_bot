@@ -975,7 +975,11 @@ export default async (req) => {
         await tgSend(chatId, resolved.error, getMainMenuMarkup());
       } else {
         const targetDay = (arg && parsed.dayInfo) ? parsed.dayInfo : dayInfo;
-        await tgSendSchedule(chatId, sub, resolved, targetDay, offset === 0, getScheduleNavigationMarkup(offset === 0));
+        let targetSub = sub;
+        if (parsed.configAlert?.format) {
+          targetSub = { ...sub, timetableFormat: parsed.configAlert.format };
+        }
+        await tgSendSchedule(chatId, targetSub, resolved, targetDay, offset === 0, getScheduleNavigationMarkup(offset === 0));
       }
       return new Response('ok');
     }
@@ -1066,7 +1070,11 @@ export default async (req) => {
         await tgSend(chatId, userFriendlyError, getMainMenuMarkup());
       } else {
         const isToday = parsed.dayInfo.weekday === getISTDayAndDate(0).weekday;
-        await tgSendSchedule(chatId, sub, resolved, parsed.dayInfo, isToday, getScheduleNavigationMarkup(isToday));
+        let targetSub = sub;
+        if (parsed.configAlert?.format) {
+          targetSub = { ...sub, timetableFormat: parsed.configAlert.format };
+        }
+        await tgSendSchedule(chatId, targetSub, resolved, parsed.dayInfo, isToday, getScheduleNavigationMarkup(isToday));
       }
     } else {
       const unrecognized = `Sorry, I couldn't understand that query. You can ask for schedules (e.g., <i>"wednesday tt"</i>, <i>"tomorrow schedule"</i>, or <i>"CSE-01 schedule"</i>) or adjust settings.\n\n` +
