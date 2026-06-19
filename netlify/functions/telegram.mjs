@@ -154,6 +154,7 @@ function parseNaturalLanguageQuery(text) {
     const dept = sectionMatch[1].toUpperCase();
     const num = parseInt(sectionMatch[2], 10);
     
+    // Check if the matched digit is followed by a time unit (e.g. "it 2 days", "me 10 mins")
     const matchEndIndex = sectionMatch.index + sectionMatch[0].length;
     const remainingText = normalizedText.substring(matchEndIndex).trim();
     const startsWithTimeUnit = /^(day|days|min|mins|minute|minutes|hour|hours|week|weeks)\b/.test(remainingText);
@@ -180,62 +181,154 @@ function parseNaturalLanguageQuery(text) {
     semester = parseInt(semMatch[1], 10);
   }
 
-  // 5. Alert configuration edits (Jargon-free NLP mapping)
+  // 5. Alert configuration edits (Jargon-free & robust)
   let configAlert = null;
-  if (/(stop|turn\s*off|disable|unsubscribe|off)\s*(alerts|notifications|notify|remind|me)?/.test(normalizedText)) {
-    configAlert = { type: 'none' };
-  } else if (/(morning\s*summary|morning\s*digest|summary\s*only|digest\s*only)/.test(normalizedText)) {
-    configAlert = { type: 'digest' };
-  } else if (/(both|summary\s*and\s*alerts)/.test(normalizedText)) {
-    configAlert = { type: 'both' };
-  }
+  const lower = normalizedText;
+  const hasAlertWord = /(notify|notification|alert|remind|reminder|summary|digest|subscribe|unsubscribe|mute|unmute|stop\s*alerts|start\s*alerts|turn\s*on|turn\s*off)/.test(lower) || /\b(5|10|15|20|25|30|45|60|five|ten|fifteen|thirty)\s*(?:mins?|minutes?|m)\b/.test(lower);
 
-  const offsetMatch = normalizedText.match(/\b(5|10|15)\s*(?:min|mins|minute|minutes)\b/);
-  if (offsetMatch) {
-    const offsetVal = parseInt(offsetMatch[1], 10);
-    if (!configAlert) configAlert = {};
-    configAlert.offset = offsetVal;
-    configAlert.type = configAlert.type || 'class_alert';
+  if (hasAlertWord) {
+    configAlert = {};
+    
+    const offsetWordMap = {
+      'five': 5, 'ten': 10, 'fifteen': 15, 'twenty': 20, 'twenty-five': 25, 'thirty': 30, 'forty-five': 45, 'sixty': 60,
+      '5': 5, '10': 10, '15': 15, '20': 20, '25': 25, '30': 30, '45': 45, '60': 60
+    };
+    const offsetMatch = lower.match(/\b(5|10|15|20|25|30|45|60|five|ten|fifteen|twenty|twenty-five|thirty|forty-five|sixty)\s*(?:mins?|minutes?|m)\b/);
+    if (offsetMatch) {
+      configAlert.offset = offsetWordMap[offsetMatch[1]];
+    }
+
+    const muteSummaryMatch = /(?:stop|disable|turn\s*off|no|cancel|without)\s*(?:morning|daily)?\s*(?:summary|digest)/.test(lower) || /(?:summary|digest)\s*(?:off|disabled|muted)/.test(lower);
+    const muteClassMatch = /(?:stop|disable|turn\s*off|no|cancel|without)\s*(?:class|classes|reminder|reminders|alert|alerts|timing|offset)/.test(lower) || /(?:class\s*alerts?|reminders?)\s*(?:off|disabled|muted)/.test(lower);
+
+    const muteAllMatch = /\b(mute|unsub|unsubscribe|stop\s*all|disable\s*all|turn\s*off\s*all|cancel\s*all|deactivate)\b/.test(lower) || 
+                         ((/\b(stop|disable|turn\s*off|cancel|off|mute)\b/.test(lower)) && !/(class|classes|summary|digest|daily)/.test(lower));
+
+    const enableBothMatch = /\b(both|all|everything)\b/.test(lower) || 
+                            (/\b(summary|digest|daily)\b/.test(lower) && /\b(class|classes|reminder|reminders|alert|alerts)\b/.test(lower) && !/(stop|disable|turn\s*off|no|cancel|without|off)/.test(lower));
+                            
+    const enableSummaryOnlyMatch = /\b(only|just)\s*(?:morning|daily)?\s*(?:summary|digest)/.test(lower) || /(?:summary|digest)\s*(?:only|just)/.test(lower);
+    const enableClassOnlyMatch = /\b(only|just)\s*(?:class|classes|reminder|reminders|alert|alerts)/.test(lower) || /(?:class|classes|reminder|reminders|alert|alerts)\s*(?:only|just)/.test(lower);
+
+    if (muteAllMatch) {
+      configAlert.type = 'none';
+    } else if (muteSummaryMatch && muteClassMatch) {
+      configAlert.type = 'none';
+    } else if (muteSummaryMatch) {
+      configAlert.action = 'mute_summary';
+    } else if (muteClassMatch) {
+      configAlert.action = 'mute_class';
+    } else if (enableBothMatch) {
+      configAlert.type = 'both';
+    } else if (enableSummaryOnlyMatch) {
+      configAlert.type = 'digest';
+    } else if (enableClassOnlyMatch) {
+      configAlert.type = 'class_alert';
+    } else {
+      const isSummaryMentioned = /\b(summary|digest|daily)\b/.test(lower);
+      const isClassMentioned = /\b(class|classes|reminder|reminders|alert|alerts|offset|mins?|minutes?|m)\b/.test(lower);
+
+      if (isClassMentioned && !isSummaryMentioned) {
+        configAlert.impliedClassAlert = true;
+      } else if (isSummaryMentioned && !isClassMentioned) {
+        configAlert.type = 'digest';
+      } else {
+        const isEnableGeneral = /\b(enable|turn\s*on|start|activate|unmute|subscribe|resume)\b/.test(lower);
+        if (isEnableGeneral) {
+          configAlert.action = 'enable_general';
+        }
+      }
+    }
   }
 
   // 6. Date extraction
   let targetDate = null;
+  let hasExplicitDateOrWeekday = false;
   const getISTNow = () => {
     return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   };
   const nowIST = getISTNow();
 
-  if (/\bday\s*after\s*tomorrow\b/.test(normalizedText)) {
-    targetDate = new Date(nowIST.getTime() + 2 * 24 * 60 * 60 * 1000);
-  } else if (/\byesterday\b/.test(normalizedText)) {
-    targetDate = new Date(nowIST.getTime() - 24 * 60 * 60 * 1000);
-  } else if (/\btoday\b/.test(normalizedText)) {
-    targetDate = nowIST;
-  } else if (/\btomorrow\b/.test(normalizedText)) {
-    targetDate = new Date(nowIST.getTime() + 24 * 60 * 60 * 1000);
-  } else {
-    // Check "in X days" or "X days from now"
-    const inDaysMatch = normalizedText.match(/\bin\s*(\d+)\s*days?\b/) || normalizedText.match(/\b(\d+)\s*days?\s*from\s*now\b/);
-    if (inDaysMatch) {
-      const days = parseInt(inDaysMatch[1], 10);
-      targetDate = new Date(nowIST.getTime() + days * 24 * 60 * 60 * 1000);
+  const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+  // A. Check "14 june" / "14th june" / "14 jun" / "14th jun"
+  const dayMonthMatch = normalizedText.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/);
+  // B. Check "june 14" / "june 14th" / "jun 14" / "jun 14th"
+  const monthDayMatch = normalizedText.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*(\d{1,2})(?:st|nd|rd|th)?\b/);
+  // C. Check "14/6" / "14-6" / "14/06" / "14-06"
+  const numericDateMatch = normalizedText.match(/\b(\d{1,2})[/\-](\d{1,2})\b/);
+
+  if (dayMonthMatch) {
+    const day = parseInt(dayMonthMatch[1], 10);
+    const monthStr = dayMonthMatch[2];
+    const monthIdx = months.indexOf(monthStr);
+    if (monthIdx !== -1 && day >= 1 && day <= 31) {
+      targetDate = new Date(nowIST.getFullYear(), monthIdx, day);
+      hasExplicitDateOrWeekday = true;
+    }
+  } else if (monthDayMatch) {
+    const monthStr = monthDayMatch[1];
+    const day = parseInt(monthDayMatch[2], 10);
+    const monthIdx = months.indexOf(monthStr);
+    if (monthIdx !== -1 && day >= 1 && day <= 31) {
+      targetDate = new Date(nowIST.getFullYear(), monthIdx, day);
+      hasExplicitDateOrWeekday = true;
+    }
+  } else if (numericDateMatch) {
+    const day = parseInt(numericDateMatch[1], 10);
+    const month = parseInt(numericDateMatch[2], 10);
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      targetDate = new Date(nowIST.getFullYear(), month - 1, day);
+      hasExplicitDateOrWeekday = true;
+    }
+  }
+
+  // Adjust target date for year transition boundaries
+  if (targetDate) {
+    if (targetDate.getTime() - nowIST.getTime() < -180 * 24 * 60 * 60 * 1000) {
+      targetDate.setFullYear(targetDate.getFullYear() + 1);
+    } else if (targetDate.getTime() - nowIST.getTime() > 180 * 24 * 60 * 60 * 1000) {
+      targetDate.setFullYear(targetDate.getFullYear() - 1);
+    }
+  }
+
+  if (!targetDate) {
+    if (/\bday\s*after\s*tomorrow\b/.test(normalizedText)) {
+      targetDate = new Date(nowIST.getTime() + 2 * 24 * 60 * 60 * 1000);
+      hasExplicitDateOrWeekday = true;
+    } else if (/\byesterday\b/.test(normalizedText)) {
+      targetDate = new Date(nowIST.getTime() - 24 * 60 * 60 * 1000);
+      hasExplicitDateOrWeekday = true;
+    } else if (/\btoday\b/.test(normalizedText)) {
+      targetDate = nowIST;
+      hasExplicitDateOrWeekday = true;
+    } else if (/\btomorrow\b/.test(normalizedText)) {
+      targetDate = new Date(nowIST.getTime() + 24 * 60 * 60 * 1000);
+      hasExplicitDateOrWeekday = true;
     } else {
-      // Check weekday: "monday", "tuesday", etc.
-      const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-      const weekdayMatch = normalizedText.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
-      
-      if (weekdayMatch) {
-        const targetDayIdx = daysOfWeek.indexOf(weekdayMatch[1]);
-        const currentDayIdx = nowIST.getDay();
-        let offset = targetDayIdx - currentDayIdx;
-        const isNext = /\bnext\b/.test(normalizedText);
-        if (offset < 0 || (offset === 0 && isNext)) {
-          offset += 7;
+      const inDaysMatch = normalizedText.match(/\bin\s*(\d+)\s*days?\b/) || normalizedText.match(/\b(\d+)\s*days?\s*from\s*now\b/);
+      if (inDaysMatch) {
+        const days = parseInt(inDaysMatch[1], 10);
+        targetDate = new Date(nowIST.getTime() + days * 24 * 60 * 60 * 1000);
+        hasExplicitDateOrWeekday = true;
+      } else {
+        const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        const weekdayMatch = normalizedText.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+        
+        if (weekdayMatch) {
+          const targetDayIdx = daysOfWeek.indexOf(weekdayMatch[1]);
+          const currentDayIdx = nowIST.getDay();
+          let offset = targetDayIdx - currentDayIdx;
+          const isNext = /\bnext\b/.test(normalizedText);
+          if (offset < 0 || (offset === 0 && isNext)) {
+            offset += 7;
+          }
+          if (isNext && offset > 0 && offset < 7) {
+            offset += 7;
+          }
+          targetDate = new Date(nowIST.getTime() + offset * 24 * 60 * 60 * 1000);
+          hasExplicitDateOrWeekday = true;
         }
-        if (isNext && offset > 0 && offset < 7) {
-          offset += 7;
-        }
-        targetDate = new Date(nowIST.getTime() + offset * 24 * 60 * 60 * 1000);
       }
     }
   }
@@ -252,14 +345,18 @@ function parseNaturalLanguageQuery(text) {
   const monthVal = parts.find(p => p.type === 'month').value;
   const yearVal = parts.find(p => p.type === 'year').value;
 
+  const isTimetableQuery = section || rollNo || hasExplicitDateOrWeekday || /\b(timetable|tt|schedule|classes|class)\b/.test(normalizedText);
+
   return {
     isGreeting,
     isThanks,
     section,
     rollNo,
-    dayInfo: { weekday, dateStr: `${dayVal} ${monthVal} ${yearVal}` },
     cohortHint: (batch || semester) ? { batch, semester } : null,
-    configAlert
+    configAlert,
+    dayInfo: { weekday, dateStr: `${dayVal} ${monthVal} ${yearVal}` },
+    hasExplicitDateOrWeekday,
+    isTimetableQuery
   };
 }
 
@@ -635,29 +732,29 @@ async function handleSettings(chatId) {
   const sub = await store.get(String(chatId), { type: 'json' });
   if (!sub) {
     return {
-      text: '🔍 <b>Registration Status: Not Registered</b>\n\nUse <code>/register &lt;roll_number&gt;</code> to register and set up custom alerts.',
+      text: '🔍 <b>Status: Profile Not Linked</b>\n\nLink your roll number using <code>/register &lt;roll_number&gt;</code> to set up automated alerts and reminders.',
       markup: getSubPageMarkup()
     };
   }
 
   const typeLabels = {
-    digest: '📅 Morning Summary Only',
-    class_alert: '⏰ Before Each Class',
-    both: '🌟 Both (Summary & Alerts)',
-    none: '🔕 Alerts Turned Off'
+    digest: '📅 Daily Morning Summary (7:30 AM)',
+    class_alert: '⏰ Alerts Before Each Class',
+    both: '🌟 Both (Summary & Class Alerts)',
+    none: '🔕 Muted (No Notifications)'
   };
   const type = sub.notificationType || 'digest';
   const offset = sub.alertOffset || 5;
 
   const text = `⚙️ <b>Notification & Timetable Settings</b>\n` +
                `━━━━━━━━━━━━━━━━━━\n` +
-               `👤 <b>Name:</b> ${esc(sub.firstName || 'Student')}\n` +
+               `👤 <b>Student Name:</b> ${esc(sub.firstName || 'Student')}\n` +
                `• <b>Roll Number:</b> <code>${esc(sub.rollNo)}</code>\n` +
-               `• <b>Section:</b> <code>${esc(sub.section)}</code>\n` +
-               `• <b>Batch:</b> ${esc(sub.label)} (Sem ${sub.semester})\n\n` +
-               `• <b>Alert Style:</b> <b>${typeLabels[type]}</b>\n` +
-               `• <b>Remind Time:</b> <b>${offset} minutes before class</b>\n\n` +
-               `Use the buttons below to customize your alerts:`;
+               `• <b>Class Section:</b> <code>${esc(sub.section)}</code>\n` +
+               `• <b>Class Year:</b> ${esc(sub.label)} (Semester ${sub.semester})\n\n` +
+               `🔔 <b>How we notify you:</b> ${typeLabels[type]}\n` +
+               `⏰ <b>Class reminder timing:</b> ${offset} minutes before class starts\n\n` +
+               `<i>Tip: Tap the buttons below to change these settings or unlink your profile. You can also chat naturally, for example: "notify me 10 mins before class".</i>`;
   return {
     text,
     markup: getSettingsMarkup(sub)
@@ -679,12 +776,13 @@ function getHelpText() {
          `⚙️ <b>Setup:</b>\n` +
          `• <code>/register &lt;roll_number&gt;</code> - Link your roll number (e.g. <code>/register 2305074</code>)\n\n` +
          `📅 <b>Queries (Try typing naturally!):</b>\n` +
-         `• <i>"show me tt of cse-01 3rd sem today"</i>\n` +
-         `• <i>"what classes does it-2 have tomorrow?"</i>\n` +
-         `• <i>"cse-03 next monday"</i>\n` +
-         `• <i>"tell me about 2305074 schedule in 2 days"</i>\n\n` +
+         `• <i>"wednesday tt"</i> or <i>"14 june"</i> (displays your own schedule once linked!)\n` +
+         `• <i>"show me tt of cse-01 today"</i>\n` +
+         `• <i>"what classes does it-02 have tomorrow?"</i>\n` +
+         `• <i>"2305074 next monday"</i>\n` +
+         `• <i>"tell me about CSE-03 schedule in 2 days"</i>\n\n` +
          `🔔 <b>Alerts Configuration:</b>\n` +
-         `• Type naturally to tweak settings: <i>"notify me 10 mins before class"</i> or <i>"disable alerts"</i>.`;
+         `• Type naturally to tweak settings: <i>"notify me 10 mins before class"</i>, <i>"turn off daily summary"</i>, or <i>"disable alerts"</i>.`;
 }
 
 function getMainMenuMarkup() {
@@ -731,10 +829,10 @@ function getSubPageMarkup() {
 
 function getSettingsMarkup(sub) {
   const typeLabels = {
-    digest: '📅 Morning Summary',
-    class_alert: '⏰ Before Each Class',
-    both: '🌟 Both',
-    none: '🔕 Turn Off Alerts'
+    digest: 'Daily Morning Summary',
+    class_alert: 'Alerts Before Class',
+    both: 'Both Summary & Alerts',
+    none: 'Muted (No Alerts)'
   };
   const type = sub.notificationType || 'digest';
   const offset = sub.alertOffset || 5;
@@ -742,13 +840,13 @@ function getSettingsMarkup(sub) {
   return {
     inline_keyboard: [
       [
-        { text: `🔔 Style: ${typeLabels[type]}`, callback_data: `toggle_type:${type}` }
+        { text: `🔔 Change Mode: ${typeLabels[type]}`, callback_data: `toggle_type:${type}` }
       ],
       [
-        { text: `⏱️ Remind: ${offset} mins before`, callback_data: `toggle_offset:${offset}` }
+        { text: `⏰ Change Timing: ${offset} mins before`, callback_data: `toggle_offset:${offset}` }
       ],
       [
-        { text: "❌ Unlink Roll Number", callback_data: "delete_registration" }
+        { text: "❌ Unlink Roll Number from Bot", callback_data: "delete_registration" }
       ],
       [
         { text: "🏠 Main Menu", callback_data: "menu" }
@@ -857,7 +955,7 @@ export default async (req) => {
         }
       } else if (action.startsWith('toggle_offset:')) {
         if (sub) {
-          const offsets = [5, 10, 15];
+          const offsets = [5, 10, 15, 30];
           const currentOffset = parseInt(action.split(':')[1], 10);
           const nextOffset = offsets[(offsets.indexOf(currentOffset) + 1) % offsets.length];
           sub.alertOffset = nextOffset;
@@ -998,29 +1096,70 @@ export default async (req) => {
       if (!sub) {
         await tgSend(chatId, `❌ You are not registered yet. Please link your roll number first using <code>/register &lt;roll_number&gt;</code> to set up custom alerts.`, getMainMenuMarkup());
       } else {
-        if (parsed.configAlert.type) sub.notificationType = parsed.configAlert.type;
-        if (parsed.configAlert.offset) sub.alertOffset = parsed.configAlert.offset;
-        sub.updatedAt = new Date().toISOString();
-        await store.setJSON(String(chatId), sub);
+        const currentType = sub.notificationType || 'digest';
+        let updated = false;
 
-        const { text: settingText, markup } = await handleSettings(chatId);
-        await tgSend(chatId, `✅ <b>Alert Settings Updated!</b>\n\n` + settingText, markup);
+        if (parsed.configAlert.action === 'mute_summary') {
+          if (currentType === 'both') sub.notificationType = 'class_alert';
+          else if (currentType === 'digest') sub.notificationType = 'none';
+          updated = true;
+        } else if (parsed.configAlert.action === 'mute_class') {
+          if (currentType === 'both') sub.notificationType = 'digest';
+          else if (currentType === 'class_alert') sub.notificationType = 'none';
+          updated = true;
+        } else if (parsed.configAlert.action === 'enable_general') {
+          sub.notificationType = 'both';
+          updated = true;
+        } else {
+          // Check for offset change
+          if (parsed.configAlert.offset) {
+            sub.alertOffset = parsed.configAlert.offset;
+            updated = true;
+            if (currentType === 'none' || currentType === 'digest') {
+              sub.notificationType = 'class_alert';
+            }
+          }
+          
+          // Check for explicit type update
+          if (parsed.configAlert.type) {
+            sub.notificationType = parsed.configAlert.type;
+            updated = true;
+          } else if (parsed.configAlert.impliedClassAlert) {
+            if (currentType === 'none' || currentType === 'digest') {
+              sub.notificationType = 'class_alert';
+              updated = true;
+            }
+          }
+        }
+
+        if (updated) {
+          sub.updatedAt = new Date().toISOString();
+          await store.setJSON(String(chatId), sub);
+          const { text: settingText, markup } = await handleSettings(chatId);
+          await tgSend(chatId, `✅ <b>Alert Settings Updated!</b>\n\n` + settingText, markup);
+        } else {
+          const { text: settingText, markup } = await handleSettings(chatId);
+          await tgSend(chatId, `ℹ️ <b>Your settings are already set:</b>\n\n` + settingText, markup);
+        }
       }
       return new Response('ok');
     }
 
     // C. Check for NLP Timetable Queries
-    if (parsed.section || parsed.rollNo) {
+    if (parsed.isTimetableQuery) {
       const resolved = await resolveUnifiedQuery(parsed, sub);
       if (resolved.error) {
-        await tgSend(chatId, resolved.error, getMainMenuMarkup());
+        const userFriendlyError = resolved.error.includes('register first') 
+          ? `🔍 <b>Profile Not Linked</b>\n\nI see you want to check the schedule for ${parsed.dayInfo.weekday}, but your profile is not linked yet.\n\nLink your roll number using <code>/register &lt;roll_number&gt;</code> (e.g. <code>/register 2305074</code>) or query a specific section directly (e.g. <code>CSE-01 Wednesday</code>).`
+          : resolved.error;
+        await tgSend(chatId, userFriendlyError, getMainMenuMarkup());
       } else {
         const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, parsed.dayInfo);
         const isToday = parsed.dayInfo.weekday === getISTDayAndDate(0).weekday;
         await tgSend(chatId, schedule, getScheduleNavigationMarkup(isToday));
       }
     } else {
-      const unrecognized = `Sorry, I couldn't find any recognized roll number or section (like <code>CSE-01</code> or <code>2305074</code>) in your message.\n\n` +
+      const unrecognized = `Sorry, I couldn't understand that query. You can ask for schedules (e.g., <i>"wednesday tt"</i>, <i>"tomorrow schedule"</i>, or <i>"CSE-01 schedule"</i>) or adjust settings.\n\n` +
                            `Here is the main menu to query details manually:`;
       await tgSend(chatId, unrecognized, getMainMenuMarkup());
     }
