@@ -11,15 +11,50 @@ async function fetchJSON(filename) {
   return res.json();
 }
 
-async function tgSend(chatId, text) {
+async function tgSend(chatId, text, replyMarkup = null) {
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+  const body = {
+    chat_id: chatId,
+    text: text,
+    parse_mode: 'HTML'
+  };
+  if (replyMarkup) {
+    body.reply_markup = replyMarkup;
+  }
+  await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
+
+async function tgSendOrEdit(chatId, messageId, text, replyMarkup = null) {
+  if (messageId) {
+    const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: text,
+        parse_mode: 'HTML',
+        reply_markup: replyMarkup
+      })
+    });
+    if (res.ok) return;
+  }
+  await tgSend(chatId, text, replyMarkup);
+}
+
+async function tgAnswerCallback(callbackQueryId, text = '') {
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`;
   await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      chat_id: chatId,
-      text: text,
-      parse_mode: 'HTML'
+      callback_query_id: callbackQueryId,
+      text: text
     })
   });
 }
@@ -77,30 +112,133 @@ function getISTDayAndDate(offsetDays = 0) {
   return { weekday, dateStr: `${day} ${month} ${year}` };
 }
 
-async function resolveQuery(queryArg, registeredUser = null) {
-  const manifest = await fetchJSON('manifest.json');
-  let rollNo = null;
-  let sectionName = null;
+function parseNaturalLanguageQuery(text) {
+  const normalizedText = text.toLowerCase().trim();
 
-  const arg = (queryArg || '').trim();
-
-  if (arg) {
-    if (/^\d{6,}$/.test(arg)) {
-      rollNo = arg;
-    } else {
-      sectionName = arg;
-    }
-  } else if (registeredUser) {
-    rollNo = registeredUser.rollNo;
-  } else {
-    return { error: 'Please register using <code>/register &lt;roll_number&gt;</code> first, or query directly using <code>/today &lt;roll_number&gt;</code> or <code>/today &lt;section&gt;</code>.' };
+  // 1. Section extraction
+  const sectionMatch = normalizedText.match(/\b(cse|csce|it|etc|csse|cs|ece|ee|me|ce)[-\s]*(\d{1,2})\b/);
+  let section = null;
+  if (sectionMatch) {
+    const dept = sectionMatch[1].toUpperCase();
+    const num = parseInt(sectionMatch[2], 10);
+    const numStr = num < 10 ? '0' + num : String(num);
+    section = `${dept}-${numStr}`;
   }
+
+  // 2. Roll number extraction (6 to 8 digits)
+  const rollMatch = normalizedText.match(/\b(\d{6,8})\b/);
+  let rollNo = rollMatch ? rollMatch[1] : null;
+
+  // 3. Cohort / Batch / Sem hints
+  let batch = null;
+  let semester = null;
+  const yearMatch = normalizedText.match(/\b(202\d)\b/);
+  if (yearMatch) {
+    batch = parseInt(yearMatch[1], 10);
+  }
+  const semMatch = normalizedText.match(/\b(\d)(?:st|nd|rd|th)?\s*sem\b/) || normalizedText.match(/\bsem(?:ester)?[-\s]*(\d)\b/);
+  if (semMatch) {
+    semester = parseInt(semMatch[1], 10);
+  }
+
+  // 4. Date extraction
+  let targetDate = null;
+  const getISTNow = () => {
+    return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  };
+  const nowIST = getISTNow();
+
+  if (/\btoday\b/.test(normalizedText)) {
+    targetDate = nowIST;
+  } else if (/\btomorrow\b/.test(normalizedText)) {
+    targetDate = new Date(nowIST.getTime() + 24 * 60 * 60 * 1000);
+  } else {
+    // Check weekday: "monday", "tuesday", etc.
+    const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const weekdayMatch = normalizedText.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+    
+    if (weekdayMatch) {
+      const targetDayIdx = daysOfWeek.indexOf(weekdayMatch[1]);
+      const currentDayIdx = nowIST.getDay();
+      let offset = targetDayIdx - currentDayIdx;
+      const isNext = /\bnext\b/.test(normalizedText);
+      if (offset < 0 || (offset === 0 && isNext)) {
+        offset += 7;
+      }
+      if (isNext && offset > 0 && offset < 7) {
+        offset += 7;
+      }
+      targetDate = new Date(nowIST.getTime() + offset * 24 * 60 * 60 * 1000);
+    }
+  }
+
+  // Check numeric or word date: "20 june", "20/06", "june 20th"
+  if (!targetDate) {
+    const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const numericDateMatch = normalizedText.match(/\b(\d{1,2})[-\/](\d{1,2})(?:[-\/](\d{2,4}))?\b/);
+    
+    if (numericDateMatch) {
+      const day = parseInt(numericDateMatch[1], 10);
+      const month = parseInt(numericDateMatch[2], 10) - 1;
+      let year = numericDateMatch[3] ? parseInt(numericDateMatch[3], 10) : nowIST.getFullYear();
+      if (year < 100) year += 2000;
+      targetDate = new Date(year, month, day);
+    } else {
+      let alphaDateMatch = normalizedText.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/);
+      let day = null;
+      let monthStr = null;
+      
+      if (alphaDateMatch) {
+        day = parseInt(alphaDateMatch[1], 10);
+        monthStr = alphaDateMatch[2];
+      } else {
+        alphaDateMatch = normalizedText.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*(\d{1,2})(?:st|nd|rd|th)?\b/);
+        if (alphaDateMatch) {
+          monthStr = alphaDateMatch[1];
+          day = parseInt(alphaDateMatch[2], 10);
+        }
+      }
+
+      if (day !== null && monthStr !== null) {
+        const monthIdx = months.findIndex(m => monthStr.startsWith(m));
+        if (monthIdx !== -1) {
+          const yearMatch = normalizedText.match(/\b(202\d|203\d)\b/);
+          const year = yearMatch ? parseInt(yearMatch[1], 10) : nowIST.getFullYear();
+          targetDate = new Date(year, monthIdx, day);
+        }
+      }
+    }
+  }
+
+  if (!targetDate) {
+    targetDate = nowIST;
+  }
+
+  const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+  const formatter = new Intl.DateTimeFormat('en-US', { ...options, timeZone: 'Asia/Kolkata' });
+  const parts = formatter.formatToParts(targetDate);
+  const weekday = parts.find(p => p.type === 'weekday').value;
+  const dayVal = parts.find(p => p.type === 'day').value;
+  const monthVal = parts.find(p => p.type === 'month').value;
+  const yearVal = parts.find(p => p.type === 'year').value;
+
+  return {
+    section,
+    rollNo,
+    dayInfo: { weekday, dateStr: `${dayVal} ${monthVal} ${yearVal}` },
+    cohortHint: (batch || semester) ? { batch, semester } : null
+  };
+}
+
+async function resolveUnifiedQuery(parsed, registeredUser = null) {
+  const { section, rollNo, cohortHint } = parsed;
+  const manifest = await fetchJSON('manifest.json');
 
   if (rollNo) {
     const rollPrefix = rollNo.substring(0, 2);
     const cohort = manifest.cohorts.find(c => c.rollPrefix === rollPrefix);
     if (!cohort) {
-      return { error: `Batch prefix <code>${esc(rollPrefix)}</code> (from roll number <code>${esc(rollNo)}</code>) is not recognized in the manifest.` };
+      return { error: `Batch prefix <code>${esc(rollPrefix)}</code> (from roll number <code>${esc(rollNo)}</code>) is not recognized.` };
     }
 
     try {
@@ -110,59 +248,79 @@ async function resolveQuery(queryArg, registeredUser = null) {
         return { error: `Roll number <code>${esc(rollNo)}</code> was not found in the <code>${esc(cohort.label)}</code> directory.` };
       }
       const sections = Array.isArray(rollData) ? rollData : [rollData];
-      return { cohort, sections, rollNo };
+      return { cohort, sections };
     } catch (e) {
       return { error: `Error loading roll mappings: ${e.message}` };
     }
   }
 
-  if (sectionName) {
-    let s = sectionName.toUpperCase().trim().replace(/[-\s]/g, '');
-    const match = s.match(/^([A-Z]+)(\d+)$/);
-    let normalizedSec = sectionName;
-    if (match) {
-      let dept = match[1];
-      let num = parseInt(match[2], 10);
-      let numStr = num < 10 ? '0' + num : String(num);
-      normalizedSec = `${dept}-${numStr}`;
+  if (section) {
+    let resolvedCohort = null;
+    let resolvedSections = null;
+
+    if (cohortHint) {
+      resolvedCohort = manifest.cohorts.find(c => 
+        (cohortHint.batch && c.batch === cohortHint.batch) || 
+        (cohortHint.semester && c.semester === cohortHint.semester)
+      );
+    }
+    
+    if (!resolvedCohort && registeredUser) {
+      resolvedCohort = manifest.cohorts.find(c => c.batch === registeredUser.batch);
     }
 
-    if (registeredUser) {
-      const cohort = manifest.cohorts.find(c => c.batch === registeredUser.batch);
-      if (cohort) {
-        try {
-          const timetable = await fetchJSON(cohort.timetable.name);
-          if (timetable[normalizedSec]) {
-            return { cohort, sections: [normalizedSec] };
-          }
-        } catch {}
-      }
-    }
-
-    for (const cohort of manifest.cohorts) {
+    if (resolvedCohort) {
       try {
-        const timetable = await fetchJSON(cohort.timetable.name);
-        if (timetable[normalizedSec]) {
-          return { cohort, sections: [normalizedSec] };
+        const timetable = await fetchJSON(resolvedCohort.timetable.name);
+        if (timetable[section]) {
+          resolvedSections = [section];
         }
       } catch {}
     }
 
-    for (const cohort of manifest.cohorts) {
-      if (cohort.electives && cohort.electives.name) {
+    if (!resolvedSections) {
+      for (const cohort of manifest.cohorts) {
         try {
-          const electives = await fetchJSON(cohort.electives.name);
-          if (electives[normalizedSec]) {
-            return { cohort, sections: [normalizedSec] };
+          const timetable = await fetchJSON(cohort.timetable.name);
+          if (timetable[section]) {
+            resolvedCohort = cohort;
+            resolvedSections = [section];
+            break;
           }
         } catch {}
       }
     }
 
-    return { error: `Section <code>${esc(sectionName)}</code> (normalized to <code>${esc(normalizedSec)}</code>) was not found in any active timetable.` };
+    if (!resolvedSections) {
+      for (const cohort of manifest.cohorts) {
+        if (cohort.electives && cohort.electives.name) {
+          try {
+            const electives = await fetchJSON(cohort.electives.name);
+            if (electives[section]) {
+              resolvedCohort = cohort;
+              resolvedSections = [section];
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    if (resolvedCohort && resolvedSections) {
+      return { cohort: resolvedCohort, sections: resolvedSections };
+    }
+
+    return { error: `Section <code>${esc(section)}</code> was not found in any active timetable.` };
   }
 
-  return { error: 'Unknown query error.' };
+  if (registeredUser) {
+    const cohort = manifest.cohorts.find(c => c.batch === registeredUser.batch);
+    if (cohort) {
+      return { cohort, sections: registeredUser.sections || [registeredUser.section] };
+    }
+  }
+
+  return { error: 'Please specify a section or roll number (e.g. <code>CSE-01</code> or <code>2305074</code>), or register first.' };
 }
 
 async function getFormattedSchedule(cohort, sections, dayInfo) {
@@ -263,7 +421,7 @@ async function handleRegister(chatId, rollNo, fromUser) {
            `• <b>Section:</b> <code>${esc(mainSection)}</code>\n` +
            `• <b>Batch:</b> ${esc(cohort.label)}\n` +
            `• <b>Notifications:</b> Enabled (7:30 AM IST)\n\n` +
-           `Try <code>/today</code> to see your schedule!`;
+           `Try <code>/today</code> or use the menu below!`;
   } catch (e) {
     return `❌ Registration failed: ${esc(e.message)}`;
   }
@@ -302,22 +460,58 @@ async function handleStatus(chatId) {
 }
 
 function getHelpText() {
-  return `🎓 <b>KampusVibes Timetable Bot</b>\n\n` +
+  return `🎓 <b>KampusVibes Timetable Bot Guide</b>\n\n` +
          `I can display your timetable and send daily morning notifications.\n\n` +
          `⚙️ <b>Setup:</b>\n` +
          `• <code>/register &lt;roll_number&gt;</code> - Link your roll number (e.g. <code>/register 2305074</code>)\n\n` +
-         `📅 <b>Queries:</b>\n` +
-         `• <code>/today</code> - Show today's timetable\n` +
-         `• <code>/tomorrow</code> - Show tomorrow's timetable\n` +
-         `• <code>/status</code> - View registered details\n\n` +
-         `🔍 <b>Direct Query (No registration needed):</b>\n` +
-         `• <code>/today &lt;roll_number&gt;</code> - Today's schedule for a roll number\n` +
-         `• <code>/today &lt;section&gt;</code> - Today's schedule for a section (e.g. <code>/today CSE-01</code>)\n` +
-         `• <code>/tomorrow &lt;roll_number&gt;</code> - Tomorrow's schedule for a roll number\n` +
-         `• <code>/tomorrow &lt;section&gt;</code> - Tomorrow's schedule for a section\n\n` +
-         `🔔 <b>Notifications:</b>\n` +
-         `• <code>/subscribe</code> - Enable daily morning alerts (7:30 AM IST)\n` +
-         `• <code>/unsubscribe</code> - Disable daily alerts`;
+         `📅 <b>Queries (Try typing naturally!):</b>\n` +
+         `• <i>"show me tt of cse-01 3rd sem today"</i>\n` +
+         `• <i>"what classes does it-2 have tomorrow?"</i>\n` +
+         `• <i>"cse-03 next monday"</i>\n` +
+         `• <i>"tell me about 2305074 schedule for 20 june"</i>\n\n` +
+         `🔔 <b>Alerts:</b>\n` +
+         `• Use the menu below to subscribe/unsubscribe from morning notifications (7:30 AM IST).`;
+}
+
+function getMainMenuMarkup() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "📅 Today's Schedule", callback_data: "today" },
+        { text: "⏭️ Tomorrow's Schedule", callback_data: "tomorrow" }
+      ],
+      [
+        { text: "👤 My Status", callback_data: "status" },
+        { text: "🔔 Toggle Alerts", callback_data: "toggle_alerts" }
+      ],
+      [
+        { text: "❓ Help Guide", callback_data: "help" }
+      ]
+    ]
+  };
+}
+
+function getScheduleNavigationMarkup(isToday = true) {
+  return {
+    inline_keyboard: [
+      [
+        isToday 
+          ? { text: "⏭️ Tomorrow's Schedule", callback_data: "tomorrow" }
+          : { text: "📅 Today's Schedule", callback_data: "today" },
+        { text: "🏠 Main Menu", callback_data: "menu" }
+      ]
+    ]
+  };
+}
+
+function getSubPageMarkup() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "🏠 Main Menu", callback_data: "menu" }
+      ]
+    ]
+  };
 }
 
 export default async (req) => {
@@ -330,6 +524,61 @@ export default async (req) => {
     return new Response('ok');
   }
 
+  // Handle Callback Queries (Button taps)
+  if (update.callback_query) {
+    const cq = update.callback_query;
+    const chatId = cq.message.chat.id;
+    const messageId = cq.message.message_id;
+    const action = cq.data;
+
+    try {
+      const store = getSubStore();
+      const sub = await store.get(String(chatId), { type: 'json' });
+
+      await tgAnswerCallback(cq.id);
+
+      if (action === 'menu') {
+        const text = `🏠 <b>KampusVibes Main Menu</b>\n\nUse the buttons below to check your schedule or adjust your settings.`;
+        await tgSendOrEdit(chatId, messageId, text, getMainMenuMarkup());
+      } else if (action === 'help') {
+        await tgSendOrEdit(chatId, messageId, getHelpText(), getSubPageMarkup());
+      } else if (action === 'status') {
+        const responseText = await handleStatus(chatId);
+        await tgSendOrEdit(chatId, messageId, responseText, getSubPageMarkup());
+      } else if (action === 'toggle_alerts') {
+        let responseText;
+        if (!sub) {
+          responseText = '❌ You are not registered yet. Please register using <code>/register &lt;roll_number&gt;</code> first.';
+        } else {
+          const newStatus = !sub.notificationsEnabled;
+          responseText = await handleSubscribe(chatId, newStatus);
+        }
+        await tgSendOrEdit(chatId, messageId, responseText, getSubPageMarkup());
+      } else if (action === 'today') {
+        const resolved = await resolveUnifiedQuery({}, sub);
+        if (resolved.error) {
+          await tgSendOrEdit(chatId, messageId, resolved.error, getSubPageMarkup());
+        } else {
+          const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, getISTDayAndDate(0));
+          await tgSendOrEdit(chatId, messageId, schedule, getScheduleNavigationMarkup(true));
+        }
+      } else if (action === 'tomorrow') {
+        const resolved = await resolveUnifiedQuery({}, sub);
+        if (resolved.error) {
+          await tgSendOrEdit(chatId, messageId, resolved.error, getSubPageMarkup());
+        } else {
+          const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, getISTDayAndDate(1));
+          await tgSendOrEdit(chatId, messageId, schedule, getScheduleNavigationMarkup(false));
+        }
+      }
+    } catch (err) {
+      console.error('Callback error:', err);
+    }
+
+    return new Response('ok');
+  }
+
+  // Handle Messages (Text input or commands)
   const m = update.message;
   if (!m || !m.text) return new Response('ok');
 
@@ -343,39 +592,75 @@ export default async (req) => {
     const store = getSubStore();
     const sub = await store.get(String(chatId), { type: 'json' });
 
-    let responseText = '';
-
     if (cmd === '/start' || cmd === '/help') {
-      responseText = getHelpText();
-    } else if (cmd === '/register') {
-      responseText = await handleRegister(chatId, arg, m.from);
-    } else if (cmd === '/subscribe') {
-      responseText = await handleSubscribe(chatId, true);
-    } else if (cmd === '/unsubscribe') {
-      responseText = await handleSubscribe(chatId, false);
-    } else if (cmd === '/status') {
-      responseText = await handleStatus(chatId);
-    } else if (cmd === '/today') {
-      const resolved = await resolveQuery(arg, sub);
-      if (resolved.error) {
-        responseText = resolved.error;
-      } else {
-        responseText = await getFormattedSchedule(resolved.cohort, resolved.sections, getISTDayAndDate(0));
-      }
-    } else if (cmd === '/tomorrow') {
-      const resolved = await resolveQuery(arg, sub);
-      if (resolved.error) {
-        responseText = resolved.error;
-      } else {
-        responseText = await getFormattedSchedule(resolved.cohort, resolved.sections, getISTDayAndDate(1));
-      }
+      const welcome = `🎓 <b>Welcome to KampusVibes Timetable Bot!</b>\n\n` +
+                      `I can look up your daily class schedule and send you morning notifications at 7:30 AM IST.\n\n` +
+                      `To start, please link your roll number using <code>/register &lt;roll_number&gt;</code> (e.g. <code>/register 2305074</code>).`;
+      await tgSend(chatId, welcome, getMainMenuMarkup());
+      return new Response('ok');
+    }
+    
+    if (cmd === '/register') {
+      const responseText = await handleRegister(chatId, arg, m.from);
+      await tgSend(chatId, responseText, getMainMenuMarkup());
+      return new Response('ok');
     }
 
-    if (responseText) {
-      await tgSend(chatId, responseText);
+    if (cmd === '/status') {
+      const responseText = await handleStatus(chatId);
+      await tgSend(chatId, responseText, getMainMenuMarkup());
+      return new Response('ok');
     }
+
+    if (cmd === '/subscribe') {
+      const responseText = await handleSubscribe(chatId, true);
+      await tgSend(chatId, responseText, getMainMenuMarkup());
+      return new Response('ok');
+    }
+
+    if (cmd === '/unsubscribe') {
+      const responseText = await handleSubscribe(chatId, false);
+      await tgSend(chatId, responseText, getMainMenuMarkup());
+      return new Response('ok');
+    }
+
+    if (cmd === '/today' || cmd === '/tomorrow') {
+      const offset = cmd === '/today' ? 0 : 1;
+      const dayInfo = getISTDayAndDate(offset);
+      
+      const parsed = arg ? parseNaturalLanguageQuery(text) : {};
+      const resolved = await resolveUnifiedQuery(parsed, sub);
+      
+      if (resolved.error) {
+        await tgSend(chatId, resolved.error, getMainMenuMarkup());
+      } else {
+        const targetDay = (arg && parsed.dayInfo) ? parsed.dayInfo : dayInfo;
+        const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, targetDay);
+        await tgSend(chatId, schedule, getScheduleNavigationMarkup(offset === 0));
+      }
+      return new Response('ok');
+    }
+
+    // Natural Language Query (No slash command)
+    const parsed = parseNaturalLanguageQuery(text);
+    
+    if (parsed.section || parsed.rollNo) {
+      const resolved = await resolveUnifiedQuery(parsed, sub);
+      if (resolved.error) {
+        await tgSend(chatId, resolved.error, getMainMenuMarkup());
+      } else {
+        const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, parsed.dayInfo);
+        const isToday = parsed.dayInfo.weekday === getISTDayAndDate(0).weekday;
+        await tgSend(chatId, schedule, getScheduleNavigationMarkup(isToday));
+      }
+    } else {
+      const unrecognized = `Sorry, I couldn't find any recognized roll number or section (like <code>CSE-01</code> or <code>2305074</code>) in your message.\n\n` +
+                           `Here is the main menu to query details manually:`;
+      await tgSend(chatId, unrecognized, getMainMenuMarkup());
+    }
+
   } catch (err) {
-    console.error('Webhook error:', err);
+    console.error('Message routing error:', err);
     try {
       await tgSend(chatId, `⚠️ An internal error occurred. Please try again later.`);
     } catch {}
