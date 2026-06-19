@@ -59,6 +59,25 @@ async function tgAnswerCallback(callbackQueryId, text = '') {
   });
 }
 
+async function registerBotCommands() {
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/setMyCommands`;
+  await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      commands: [
+        { command: 'start', description: 'Show main menu & persistent buttons' },
+        { command: 'today', description: 'View today\'s schedule' },
+        { command: 'tomorrow', description: 'View tomorrow\'s schedule' },
+        { command: 'weekly', description: 'View weekly timetable' },
+        { command: 'next', description: 'View current and next class' },
+        { command: 'settings', description: 'Manage notification settings' },
+        { command: 'help', description: 'View guide on using this bot' }
+      ]
+    })
+  });
+}
+
 function parseTimeToMinutes(slot) {
   const startPart = slot.split('-')[0].trim();
   const timeParts = startPart.split('.');
@@ -112,6 +131,15 @@ function getISTDayAndDate(offsetDays = 0) {
   return { weekday, dateStr: `${day} ${month} ${year}` };
 }
 
+function getISTMinutesFromMidnight() {
+  const now = new Date();
+  const options = { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false };
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  const timeStr = formatter.format(now);
+  const [hour, min] = timeStr.split(':').map(Number);
+  return hour * 60 + min;
+}
+
 function parseNaturalLanguageQuery(text) {
   const normalizedText = text.toLowerCase().trim();
 
@@ -129,7 +157,7 @@ function parseNaturalLanguageQuery(text) {
   const rollMatch = normalizedText.match(/\b(\d{6,8})\b/);
   let rollNo = rollMatch ? rollMatch[1] : null;
 
-  // 3. Cohort / Batch / Sem hints (removed strict boundary before sem)
+  // 3. Cohort / Batch / Sem hints
   let batch = null;
   let semester = null;
   const yearMatch = normalizedText.match(/\b(202\d)\b/);
@@ -153,7 +181,6 @@ function parseNaturalLanguageQuery(text) {
   } else if (/\btomorrow\b/.test(normalizedText)) {
     targetDate = new Date(nowIST.getTime() + 24 * 60 * 60 * 1000);
   } else {
-    // Check weekday: "monday", "tuesday", etc.
     const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const weekdayMatch = normalizedText.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
     
@@ -172,7 +199,6 @@ function parseNaturalLanguageQuery(text) {
     }
   }
 
-  // Check numeric or word date: "20 june", "20/06", "june 20th"
   if (!targetDate) {
     const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
     const numericDateMatch = normalizedText.match(/\b(\d{1,2})[-\/](\d{1,2})(?:[-\/](\d{2,4}))?\b/);
@@ -376,6 +402,159 @@ async function getFormattedSchedule(cohort, sections, dayInfo) {
   return text.trim();
 }
 
+async function getWeeklyScheduleText(cohort, sections) {
+  const timetable = await fetchJSON(cohort.timetable.name);
+  const mainSec = sections[0];
+  const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  let text = `🗓️ <b>Weekly Timetable</b>\n`;
+  text += `🏫 <b>Section:</b> <code>${esc(mainSec)}</code> (${esc(cohort.label)})\n`;
+  if (sections.length > 1) {
+    text += `🎯 <b>Electives:</b> ${sections.slice(1).map(s => `<code>${esc(s)}</code>`).join(', ')}\n`;
+  }
+  text += `━━━━━━━━━━━━━━━━━━\n\n`;
+
+  let electivesTimetable = null;
+  if (cohort.electives && cohort.electives.name && sections.length > 1) {
+    try {
+      electivesTimetable = await fetchJSON(cohort.electives.name);
+    } catch (e) {
+      console.error('Error loading electives for weekly:', e);
+    }
+  }
+
+  for (const day of weekdays) {
+    const mainSchedule = timetable[mainSec]?.[day] || {};
+    const combined = { ...mainSchedule };
+
+    if (electivesTimetable) {
+      for (let i = 1; i < sections.length; i++) {
+        const electiveKey = sections[i];
+        const electiveSchedule = electivesTimetable[electiveKey]?.[day] || {};
+        for (const [slot, slotInfo] of Object.entries(electiveSchedule)) {
+          combined[slot] = {
+            ...slotInfo,
+            isElective: true
+          };
+        }
+      }
+    }
+
+    const slots = Object.keys(combined);
+    text += `<b>${day}:</b>\n`;
+    if (slots.length === 0) {
+      text += `<i>No classes</i>\n\n`;
+      continue;
+    }
+
+    slots.sort((a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b));
+    for (const slot of slots) {
+      const info = combined[slot];
+      text += `• <code>${slot}</code>: <b>${esc(info.subject)}</b>${info.isElective ? ' (E)' : ''} ${info.room ? `[${esc(info.room)}]` : ''}\n`;
+    }
+    text += `\n`;
+  }
+
+  return text.trim();
+}
+
+async function getNextClassText(cohort, sections) {
+  const dayInfo = getISTDayAndDate(0);
+  const weekday = dayInfo.weekday;
+  const currentMinutes = getISTMinutesFromMidnight();
+
+  const timetable = await fetchJSON(cohort.timetable.name);
+  const mainSec = sections[0];
+  const mainSchedule = timetable[mainSec]?.[weekday] || {};
+
+  const combined = { ...mainSchedule };
+
+  if (cohort.electives && cohort.electives.name && sections.length > 1) {
+    try {
+      const electivesTimetable = await fetchJSON(cohort.electives.name);
+      for (let i = 1; i < sections.length; i++) {
+        const electiveKey = sections[i];
+        const electiveSchedule = electivesTimetable[electiveKey]?.[weekday] || {};
+        for (const [slot, slotInfo] of Object.entries(electiveSchedule)) {
+          combined[slot] = {
+            ...slotInfo,
+            isElective: true
+          };
+        }
+      }
+    } catch (e) {
+      console.error('Error loading electives for next class:', e);
+    }
+  }
+
+  const slots = Object.keys(combined);
+  if (slots.length === 0) {
+    return `🎉 <b>No classes scheduled for today (${weekday})!</b>`;
+  }
+
+  const classes = slots.map(slot => {
+    const start = parseTimeToMinutes(slot);
+    const endPart = slot.split('-')[1].trim();
+    const parts = endPart.split('.');
+    let endHour = parseInt(parts[0], 10);
+    let endMin = parts[1] ? parseInt(parts[1], 10) : 0;
+    if (endHour >= 1 && endHour < 8) endHour += 12;
+    const end = endHour * 60 + endMin;
+
+    return {
+      slot,
+      start,
+      end,
+      info: combined[slot]
+    };
+  });
+
+  classes.sort((a, b) => a.start - b.start);
+
+  let currentClass = null;
+  let nextClass = null;
+
+  for (const c of classes) {
+    if (currentMinutes >= c.start && currentMinutes < c.end) {
+      currentClass = c;
+    } else if (c.start > currentMinutes && !nextClass) {
+      nextClass = c;
+    }
+  }
+
+  let text = `⏭️ <b>Current & Next Class</b>\n`;
+  text += `🏫 <b>Section:</b> <code>${esc(mainSec)}</code>\n`;
+  text += `━━━━━━━━━━━━━━━━━━\n\n`;
+
+  if (currentClass) {
+    const remaining = currentClass.end - currentMinutes;
+    text += `📖 <b>Current Class (Ongoing):</b>\n`;
+    text += `• <b>${esc(currentClass.info.subject)}</b>${currentClass.info.isElective ? ' <i>(Elective)</i>' : ''}\n`;
+    text += `⏰ Time: <code>${esc(formatTimeSlot(currentClass.slot))}</code>\n`;
+    if (currentClass.info.room) {
+      text += `📍 Room: <code>${esc(currentClass.info.room)}</code>\n`;
+    }
+    text += `⏳ Ends in: <b>${remaining} minutes</b>\n\n`;
+  } else {
+    text += `📖 <b>Current Class:</b> None\n\n`;
+  }
+
+  if (nextClass) {
+    const diff = nextClass.start - currentMinutes;
+    text += `⏭️ <b>Next Class:</b>\n`;
+    text += `• <b>${esc(nextClass.info.subject)}</b>${nextClass.info.isElective ? ' <i>(Elective)</i>' : ''}\n`;
+    text += `⏰ Time: <code>${esc(formatTimeSlot(nextClass.slot))}</code>\n`;
+    if (nextClass.info.room) {
+      text += `📍 Room: <code>${esc(nextClass.info.room)}</code>\n`;
+    }
+    text += `⏳ Starts in: <b>${diff} minutes</b>\n`;
+  } else {
+    text += `⏭️ <b>Next Class:</b> None (You are done for the day! 🎉)\n`;
+  }
+
+  return text;
+}
+
 async function handleRegister(chatId, rollNo, fromUser) {
   const roll = (rollNo || '').trim();
   if (!/^\d{6,}$/.test(roll)) {
@@ -411,7 +590,8 @@ async function handleRegister(chatId, rollNo, fromUser) {
       batch: cohort.batch,
       label: cohort.label,
       semester: cohort.semester,
-      notificationsEnabled: true,
+      notificationType: 'digest',
+      alertOffset: 5,
       updatedAt: new Date().toISOString()
     });
 
@@ -420,7 +600,7 @@ async function handleRegister(chatId, rollNo, fromUser) {
            `• <b>Roll Number:</b> <code>${esc(roll)}</code>\n` +
            `• <b>Section:</b> <code>${esc(mainSection)}</code>\n` +
            `• <b>Batch:</b> ${esc(cohort.label)}\n` +
-           `• <b>Notifications:</b> Enabled (7:30 AM IST)\n\n` +
+           `• <b>Notifications:</b> Morning Digest (7:30 AM IST)\n\n` +
            `Try <code>/today</code> or use the menu below!`;
   } catch (e) {
     return `❌ Registration failed: ${esc(e.message)}`;
@@ -434,34 +614,61 @@ async function handleSubscribe(chatId, enable) {
     return '❌ You are not registered yet. Please register using <code>/register &lt;roll_number&gt;</code> first.';
   }
 
-  sub.notificationsEnabled = enable;
+  sub.notificationType = enable ? 'digest' : 'none';
   sub.updatedAt = new Date().toISOString();
   await store.setJSON(String(chatId), sub);
 
   return enable 
-    ? '🔔 <b>Daily Notifications Enabled!</b>\nI will send you your class schedule every morning at 7:30 AM IST.'
-    : '🔕 <b>Daily Notifications Disabled!</b>\nYou will no longer receive morning schedule alerts. You can still query manually.';
+    ? '🔔 <b>Notifications Enabled!</b>\nI will send you your class schedule every morning at 7:30 AM IST.'
+    : '🔕 <b>Notifications Disabled!</b>\nYou will no longer receive any alerts. You can still query manually.';
 }
 
-async function handleStatus(chatId) {
+async function handleSettings(chatId) {
   const store = getSubStore();
   const sub = await store.get(String(chatId), { type: 'json' });
   if (!sub) {
-    return '🔍 <b>Registration Status: Not Registered</b>\n\nUse <code>/register &lt;roll_number&gt;</code> to register and receive daily alerts.';
+    return {
+      text: '🔍 <b>Registration Status: Not Registered</b>\n\nUse <code>/register &lt;roll_number&gt;</code> to register and set up custom alerts.',
+      markup: getSubPageMarkup()
+    };
   }
 
-  return `👤 <b>Your Registration Status</b>\n` +
-         `━━━━━━━━━━━━━━━━━━\n` +
-         `• <b>Roll Number:</b> <code>${esc(sub.rollNo)}</code>\n` +
-         `• <b>Section:</b> <code>${esc(sub.section)}</code>\n` +
-         `• <b>Batch:</b> ${esc(sub.label)} (Sem ${sub.semester})\n` +
-         `• <b>Notifications:</b> ${sub.notificationsEnabled ? '✅ Enabled (7:30 AM IST)' : '❌ Disabled'}\n\n` +
-         `To change registration, run <code>/register &lt;new_roll&gt;</code>.`;
+  const typeLabels = {
+    digest: '📅 Morning Digest',
+    class_alert: '⏰ Before Each Class',
+    both: '🌟 Digest & Class Alerts',
+    none: '🔕 Off'
+  };
+  const type = sub.notificationType || 'digest';
+  const offset = sub.alertOffset || 5;
+
+  const text = `⚙️ <b>Notification & Timetable Settings</b>\n` +
+               `━━━━━━━━━━━━━━━━━━\n` +
+               `👤 <b>Name:</b> ${esc(sub.firstName || 'Student')}\n` +
+               `• <b>Roll Number:</b> <code>${esc(sub.rollNo)}</code>\n` +
+               `• <b>Section:</b> <code>${esc(sub.section)}</code>\n` +
+               `• <b>Batch:</b> ${esc(sub.label)} (Sem ${sub.semester})\n\n` +
+               `• <b>Alert Mode:</b> <b>${typeLabels[type]}</b>\n` +
+               `• <b>Class Offset:</b> <b>${offset} minutes</b>\n\n` +
+               `Use the buttons below to customize your alerts:`;
+  return {
+    text,
+    markup: getSettingsMarkup(sub)
+  };
+}
+
+async function handleDeleteRegistration(chatId) {
+  const store = getSubStore();
+  await store.delete(String(chatId));
+  return {
+    text: '❌ <b>Registration Deleted</b>\n\nYour roll number and settings have been cleared from our database. You will no longer receive any notifications.',
+    markup: { remove_keyboard: true }
+  };
 }
 
 function getHelpText() {
   return `🎓 <b>KampusVibes Timetable Bot Guide</b>\n\n` +
-         `I can display your timetable and send daily morning notifications.\n\n` +
+         `I can display your timetable and send daily morning notifications or class-by-class alerts.\n\n` +
          `⚙️ <b>Setup:</b>\n` +
          `• <code>/register &lt;roll_number&gt;</code> - Link your roll number (e.g. <code>/register 2305074</code>)\n\n` +
          `📅 <b>Queries (Try typing naturally!):</b>\n` +
@@ -481,10 +688,11 @@ function getMainMenuMarkup() {
         { text: "⏭️ Tomorrow's Schedule", callback_data: "tomorrow" }
       ],
       [
-        { text: "👤 My Status", callback_data: "status" },
-        { text: "🔔 Toggle Alerts", callback_data: "toggle_alerts" }
+        { text: "🗓️ Weekly Timetable", callback_data: "weekly" },
+        { text: "⏭️ Next Class", callback_data: "next" }
       ],
       [
+        { text: "⚙️ Settings & Status", callback_data: "settings" },
         { text: "❓ Help Guide", callback_data: "help" }
       ]
     ]
@@ -511,6 +719,55 @@ function getSubPageMarkup() {
         { text: "🏠 Main Menu", callback_data: "menu" }
       ]
     ]
+  };
+}
+
+function getSettingsMarkup(sub) {
+  const typeLabels = {
+    digest: '📅 Digest',
+    class_alert: '⏰ Class Alert',
+    both: '🌟 Both',
+    none: '🔕 Off'
+  };
+  const type = sub.notificationType || 'digest';
+  const offset = sub.alertOffset || 5;
+
+  return {
+    inline_keyboard: [
+      [
+        { text: `🔔 Mode: ${typeLabels[type]}`, callback_data: `toggle_type:${type}` }
+      ],
+      [
+        { text: `⏱️ Offset: ${offset} mins`, callback_data: `toggle_offset:${offset}` }
+      ],
+      [
+        { text: "❌ Delete My Registration", callback_data: "delete_registration" }
+      ],
+      [
+        { text: "🏠 Main Menu", callback_data: "menu" }
+      ]
+    ]
+  };
+}
+
+function getMainReplyKeyboard() {
+  return {
+    keyboard: [
+      [
+        { text: "📅 Today's Schedule" },
+        { text: "⏭️ Tomorrow's Schedule" }
+      ],
+      [
+        { text: "🗓️ Weekly Timetable" },
+        { text: "⏭️ Next Class" }
+      ],
+      [
+        { text: "⚙️ Settings & Status" },
+        { text: "❓ Help Guide" }
+      ]
+    ],
+    resize_keyboard: true,
+    persistent: true
   };
 }
 
@@ -542,18 +799,12 @@ export default async (req) => {
         await tgSendOrEdit(chatId, messageId, text, getMainMenuMarkup());
       } else if (action === 'help') {
         await tgSendOrEdit(chatId, messageId, getHelpText(), getSubPageMarkup());
-      } else if (action === 'status') {
-        const responseText = await handleStatus(chatId);
-        await tgSendOrEdit(chatId, messageId, responseText, getSubPageMarkup());
-      } else if (action === 'toggle_alerts') {
-        let responseText;
-        if (!sub) {
-          responseText = '❌ You are not registered yet. Please register using <code>/register &lt;roll_number&gt;</code> first.';
-        } else {
-          const newStatus = !sub.notificationsEnabled;
-          responseText = await handleSubscribe(chatId, newStatus);
-        }
-        await tgSendOrEdit(chatId, messageId, responseText, getSubPageMarkup());
+      } else if (action === 'settings') {
+        const { text, markup } = await handleSettings(chatId);
+        await tgSendOrEdit(chatId, messageId, text, markup);
+      } else if (action === 'delete_registration') {
+        const { text, markup } = await handleDeleteRegistration(chatId);
+        await tgSendOrEdit(chatId, messageId, text, markup);
       } else if (action === 'today') {
         const resolved = await resolveUnifiedQuery({}, sub);
         if (resolved.error) {
@@ -570,6 +821,44 @@ export default async (req) => {
           const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, getISTDayAndDate(1));
           await tgSendOrEdit(chatId, messageId, schedule, getScheduleNavigationMarkup(false));
         }
+      } else if (action === 'weekly') {
+        const resolved = await resolveUnifiedQuery({}, sub);
+        if (resolved.error) {
+          await tgSendOrEdit(chatId, messageId, resolved.error, getSubPageMarkup());
+        } else {
+          const weeklyText = await getWeeklyScheduleText(resolved.cohort, resolved.sections);
+          await tgSendOrEdit(chatId, messageId, weeklyText, getSubPageMarkup());
+        }
+      } else if (action === 'next') {
+        const resolved = await resolveUnifiedQuery({}, sub);
+        if (resolved.error) {
+          await tgSendOrEdit(chatId, messageId, resolved.error, getSubPageMarkup());
+        } else {
+          const nextText = await getNextClassText(resolved.cohort, resolved.sections);
+          await tgSendOrEdit(chatId, messageId, nextText, getSubPageMarkup());
+        }
+      } else if (action.startsWith('toggle_type:')) {
+        if (sub) {
+          const types = ['digest', 'class_alert', 'both', 'none'];
+          const currentType = action.split(':')[1];
+          const nextType = types[(types.indexOf(currentType) + 1) % types.length];
+          sub.notificationType = nextType;
+          sub.updatedAt = new Date().toISOString();
+          await store.setJSON(String(chatId), sub);
+          const { text, markup } = await handleSettings(chatId);
+          await tgSendOrEdit(chatId, messageId, text, markup);
+        }
+      } else if (action.startsWith('toggle_offset:')) {
+        if (sub) {
+          const offsets = [5, 10, 15];
+          const currentOffset = parseInt(action.split(':')[1], 10);
+          const nextOffset = offsets[(offsets.indexOf(currentOffset) + 1) % offsets.length];
+          sub.alertOffset = nextOffset;
+          sub.updatedAt = new Date().toISOString();
+          await store.setJSON(String(chatId), sub);
+          const { text, markup } = await handleSettings(chatId);
+          await tgSendOrEdit(chatId, messageId, text, markup);
+        }
       }
     } catch (err) {
       console.error('Callback error:', err);
@@ -583,7 +872,17 @@ export default async (req) => {
   if (!m || !m.text) return new Response('ok');
 
   const chatId = m.chat.id;
-  const text = m.text.trim();
+  const rawText = m.text.trim();
+  
+  // Map reply keyboard button text to mock command text
+  let text = rawText;
+  if (rawText === "📅 Today's Schedule") text = "/today";
+  else if (rawText === "⏭️ Tomorrow's Schedule") text = "/tomorrow";
+  else if (rawText === "🗓️ Weekly Timetable") text = "/weekly";
+  else if (rawText === "⏭️ Next Class") text = "/next";
+  else if (rawText === "⚙️ Settings & Status") text = "/settings";
+  else if (rawText === "❓ Help Guide") text = "/help";
+
   const tokens = text.split(/\s+/);
   const cmd = tokens[0].toLowerCase();
   const arg = text.substring(tokens[0].length).trim();
@@ -593,34 +892,64 @@ export default async (req) => {
     const sub = await store.get(String(chatId), { type: 'json' });
 
     if (cmd === '/start' || cmd === '/help') {
+      try {
+        await registerBotCommands();
+      } catch (e) {
+        console.error('Error setting commands:', e);
+      }
+      
       const welcome = `🎓 <b>Welcome to KampusVibes Timetable Bot!</b>\n\n` +
-                      `I can look up your daily class schedule and send you morning notifications at 7:30 AM IST.\n\n` +
+                      `I can look up your daily class schedule and send you morning notifications or class-by-class alerts.\n\n` +
                       `To start, please link your roll number using <code>/register &lt;roll_number&gt;</code> (e.g. <code>/register 2305074</code>).`;
-      await tgSend(chatId, welcome, getMainMenuMarkup());
+      await tgSend(chatId, welcome, getMainReplyKeyboard());
       return new Response('ok');
     }
     
     if (cmd === '/register') {
       const responseText = await handleRegister(chatId, arg, m.from);
-      await tgSend(chatId, responseText, getMainMenuMarkup());
+      await tgSend(chatId, responseText, getMainReplyKeyboard());
       return new Response('ok');
     }
 
-    if (cmd === '/status') {
-      const responseText = await handleStatus(chatId);
-      await tgSend(chatId, responseText, getMainMenuMarkup());
+    if (cmd === '/settings' || cmd === '/status') {
+      const { text: settingText, markup } = await handleSettings(chatId);
+      await tgSend(chatId, settingText, markup);
       return new Response('ok');
     }
 
     if (cmd === '/subscribe') {
       const responseText = await handleSubscribe(chatId, true);
-      await tgSend(chatId, responseText, getMainMenuMarkup());
+      await tgSend(chatId, responseText, getMainReplyKeyboard());
       return new Response('ok');
     }
 
     if (cmd === '/unsubscribe') {
       const responseText = await handleSubscribe(chatId, false);
-      await tgSend(chatId, responseText, getMainMenuMarkup());
+      await tgSend(chatId, responseText, getMainReplyKeyboard());
+      return new Response('ok');
+    }
+
+    if (cmd === '/weekly') {
+      const parsed = arg ? parseNaturalLanguageQuery(text) : {};
+      const resolved = await resolveUnifiedQuery(parsed, sub);
+      if (resolved.error) {
+        await tgSend(chatId, resolved.error, getMainMenuMarkup());
+      } else {
+        const weeklyText = await getWeeklyScheduleText(resolved.cohort, resolved.sections);
+        await tgSend(chatId, weeklyText, getSubPageMarkup());
+      }
+      return new Response('ok');
+    }
+
+    if (cmd === '/next') {
+      const parsed = arg ? parseNaturalLanguageQuery(text) : {};
+      const resolved = await resolveUnifiedQuery(parsed, sub);
+      if (resolved.error) {
+        await tgSend(chatId, resolved.error, getMainMenuMarkup());
+      } else {
+        const nextText = await getNextClassText(resolved.cohort, resolved.sections);
+        await tgSend(chatId, nextText, getSubPageMarkup());
+      }
       return new Response('ok');
     }
 

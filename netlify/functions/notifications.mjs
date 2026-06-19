@@ -83,8 +83,17 @@ function getISTDayAndDate() {
   return { weekday, dateStr: `${day} ${month} ${year}` };
 }
 
+function getISTMinutesFromMidnight() {
+  const now = new Date();
+  const options = { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false };
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  const timeStr = formatter.format(now);
+  const [hour, min] = timeStr.split(':').map(Number);
+  return hour * 60 + min;
+}
+
 export default async (req) => {
-  console.log('Daily timetable notifications cron job started...');
+  console.log('Class schedule notifications cron job started...');
 
   const store = getSubStore();
   let list;
@@ -97,7 +106,8 @@ export default async (req) => {
 
   const dayInfo = getISTDayAndDate();
   const { weekday, dateStr } = dayInfo;
-  console.log(`Current IST Date: ${weekday}, ${dateStr}`);
+  const currentMinutes = getISTMinutesFromMidnight();
+  console.log(`Current IST Time: ${weekday}, ${dateStr} at ${Math.floor(currentMinutes / 60)}:${String(currentMinutes % 60).padStart(2, '0')} (${currentMinutes} mins from midnight)`);
 
   let manifest;
   try {
@@ -107,24 +117,28 @@ export default async (req) => {
     return new Response('Error fetching manifest', { status: 500 });
   }
 
-  let sentCount = 0;
+  let digestSent = 0;
+  let alertSent = 0;
   let deletedCount = 0;
+
+  // We send the morning digest around 7:30 AM IST (450 minutes from midnight)
+  const isDigestWindow = currentMinutes >= 448 && currentMinutes <= 452;
 
   for (const blob of list.blobs) {
     const chatId = blob.key;
     try {
       const sub = await store.get(chatId, { type: 'json' });
-      if (!sub || !sub.notificationsEnabled) continue;
+      if (!sub) continue;
+
+      const type = sub.notificationType || 'digest';
+      if (type === 'none') continue;
 
       const rollPrefix = sub.rollNo.substring(0, 2);
       const cohort = manifest.cohorts.find(c => c.rollPrefix === rollPrefix);
-      if (!cohort) {
-        console.warn(`Subscriber ${chatId} has untracked batch prefix: ${rollPrefix}`);
-        continue;
-      }
+      if (!cohort) continue;
 
+      // 1. Fetch timetable and load electives
       const timetable = await fetchJSONCached(cohort.timetable.name);
-      
       const sections = sub.sections || [sub.section];
       const mainSec = sections[0];
       const mainSchedule = timetable[mainSec]?.[weekday] || {};
@@ -150,48 +164,83 @@ export default async (req) => {
       }
 
       const slots = Object.keys(combined);
-      if (slots.length === 0) {
-        continue;
-      }
+      if (slots.length === 0) continue;
 
+      // Sort slots
       slots.sort((a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b));
 
-      let text = `☀️ <b>Good Morning, ${esc(sub.firstName || 'Student')}!</b>\n\n`;
-      text += `📅 <b>Your schedule for today (${esc(weekday)}):</b>\n`;
-      text += `🏫 <b>Section:</b> <code>${esc(mainSec)}</code>\n`;
-      text += `━━━━━━━━━━━━━━━━━━\n\n`;
+      // 2. Process Morning Digest (at 7:30 AM IST)
+      if (isDigestWindow && (type === 'digest' || type === 'both')) {
+        let text = `☀️ <b>Good Morning, ${esc(sub.firstName || 'Student')}!</b>\n\n`;
+        text += `📅 <b>Your schedule for today (${esc(weekday)}):</b>\n`;
+        text += `🏫 <b>Section:</b> <code>${esc(mainSec)}</code>\n`;
+        text += `━━━━━━━━━━━━━━━━━━\n\n`;
 
-      for (const slot of slots) {
-        const info = combined[slot];
-        text += `⏰ <b>${esc(formatTimeSlot(slot))}</b>\n`;
-        text += `📖 <b>${esc(info.subject)}</b>${info.isElective ? ' <i>(Elective)</i>' : ''}\n`;
-        if (info.room) {
-          text += `📍 Room: <code>${esc(info.room)}</code>\n`;
+        for (const slot of slots) {
+          const info = combined[slot];
+          text += `⏰ <b>${esc(formatTimeSlot(slot))}</b>\n`;
+          text += `📖 <b>${esc(info.subject)}</b>${info.isElective ? ' <i>(Elective)</i>' : ''}\n`;
+          if (info.room) {
+            text += `📍 Room: <code>${esc(info.room)}</code>\n`;
+          }
+          text += `\n`;
         }
-        text += `\n`;
-      }
-      
-      text = text.trim();
+        
+        text = text.trim();
 
-      const tgRes = await tgSend(chatId, text);
-      if (tgRes.status === 403) {
-        console.log(`Sub ${chatId} blocked the bot. Deleting subscription.`);
-        await store.delete(chatId);
-        deletedCount++;
-      } else if (!tgRes.ok) {
-        console.error(`Failed to send to ${chatId}: HTTP ${tgRes.status}`);
-      } else {
-        sentCount++;
+        const tgRes = await tgSend(chatId, text);
+        if (tgRes.status === 403) {
+          console.log(`Sub ${chatId} blocked the bot. Deleting subscription.`);
+          await store.delete(chatId);
+          deletedCount++;
+          continue;
+        } else if (tgRes.ok) {
+          digestSent++;
+        }
       }
+
+      // 3. Process Class-by-Class Alerts (Triggered near targetOffset minutes before class)
+      if (type === 'class_alert' || type === 'both') {
+        const offset = sub.alertOffset || 5;
+
+        for (const slot of slots) {
+          const classStart = parseTimeToMinutes(slot);
+          const targetAlertTime = classStart - offset;
+
+          // Jitter-proof matching window (covers +/- 2 minutes around target alert time)
+          if (Math.abs(targetAlertTime - currentMinutes) <= 2) {
+            const info = combined[slot];
+            const startTimeStr = formatTimeSlot(slot).split(' - ')[0];
+
+            let text = `⏰ <b>Upcoming Class Alert!</b>\n\n`;
+            text += `📖 Your class <b>${esc(info.subject)}</b> starts in <b>${offset} minutes</b> (at ${esc(startTimeStr)})!\n`;
+            if (info.room) {
+              text += `📍 Room: <code>${esc(info.room)}</code>\n`;
+            }
+            text += `🏫 Section: <code>${esc(mainSec)}</code>`;
+
+            const tgRes = await tgSend(chatId, text);
+            if (tgRes.status === 403) {
+              console.log(`Sub ${chatId} blocked the bot. Deleting subscription.`);
+              await store.delete(chatId);
+              deletedCount++;
+              break; // exit slots loop for this deleted user
+            } else if (tgRes.ok) {
+              alertSent++;
+            }
+          }
+        }
+      }
+
     } catch (subErr) {
-      console.error(`Error sending notification to ${chatId}:`, subErr);
+      console.error(`Error sending notifications to ${chatId}:`, subErr);
     }
   }
 
-  console.log(`Cron execution summary: Sent: ${sentCount}, Deleted: ${deletedCount}`);
-  return new Response(`Processed notifications. Sent: ${sentCount}, Deleted: ${deletedCount}`);
+  console.log(`Cron execution summary: Digest Sent: ${digestSent}, Alerts Sent: ${alertSent}, Deleted: ${deletedCount}`);
+  return new Response(`Processed notifications. Digest Sent: ${digestSent}, Alerts Sent: ${alertSent}, Deleted: ${deletedCount}`);
 };
 
 export const config = {
-  schedule: '0 2 * * 1-6' // 02:00 UTC = 07:30 AM IST, Monday to Saturday
+  schedule: '*/5 2-13 * * 1-6' // every 5 minutes, 7:30 AM to 7:29 PM IST, Monday to Saturday
 };
