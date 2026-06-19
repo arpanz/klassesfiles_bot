@@ -1,0 +1,10 @@
+{
+  "name": "klassesfiles-student-bot",
+  "version": "1.0.0",
+  "description": "Student Timetable Telegram Bot for KampusVibes",
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "klassesfiles-functions": "file:../klassesfiles"
+  }
+}
