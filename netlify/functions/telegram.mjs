@@ -1,19 +1,32 @@
 import { getStore } from '@netlify/blobs';
-import {
-  fetchJSON,
-  parseTimeToMinutes,
-  formatTimeSlot,
-  esc,
-  getISTDayAndDate,
-  getISTMinutesFromMidnight,
-  tgSend,
-  tgSendPhoto,
-  tgSendSchedule,
-  getFormattedSchedule
-} from './utils.mjs';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const BASE_URL = 'https://klassesfiles.netlify.app';
+
 const getSubStore = () => getStore('subscribers');
+
+async function fetchJSON(filename) {
+  const res = await fetch(`${BASE_URL}/${filename}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${filename}`);
+  return res.json();
+}
+
+async function tgSend(chatId, text, replyMarkup = null) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+  const body = {
+    chat_id: chatId,
+    text: text,
+    parse_mode: 'HTML'
+  };
+  if (replyMarkup) {
+    body.reply_markup = replyMarkup;
+  }
+  await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
 
 async function tgSendOrEdit(chatId, messageId, text, replyMarkup = null) {
   if (messageId) {
@@ -65,6 +78,67 @@ async function registerBotCommands() {
   });
 }
 
+function parseTimeToMinutes(slot) {
+  const startPart = slot.split('-')[0].trim();
+  const timeParts = startPart.split('.');
+  let hour = parseInt(timeParts[0], 10);
+  let min = timeParts[1] ? parseInt(timeParts[1], 10) : 0;
+  if (hour >= 1 && hour < 8) {
+    hour += 12;
+  }
+  return hour * 60 + min;
+}
+
+function formatPart(part) {
+  const val = parseFloat(part);
+  let hour = Math.floor(val);
+  let min = Math.round((val - hour) * 100);
+  let suffix = 'AM';
+  if (hour === 12) {
+    suffix = 'PM';
+  } else if (hour >= 1 && hour < 8) {
+    suffix = 'PM';
+  }
+  const minStr = min === 0 ? ':00' : `:${min < 10 ? '0' + min : min}`;
+  return `${hour}${minStr} ${suffix}`;
+}
+
+function formatTimeSlot(slot) {
+  try {
+    const parts = slot.split('-');
+    return `${formatPart(parts[0])} - ${formatPart(parts[1])}`;
+  } catch {
+    return slot;
+  }
+}
+
+function esc(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function getISTDayAndDate(offsetDays = 0) {
+  const date = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
+  const options = { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  const parts = formatter.formatToParts(date);
+  const weekday = parts.find(p => p.type === 'weekday').value;
+  const day = parts.find(p => p.type === 'day').value;
+  const month = parts.find(p => p.type === 'month').value;
+  const year = parts.find(p => p.type === 'year').value;
+  return { weekday, dateStr: `${day} ${month} ${year}` };
+}
+
+function getISTMinutesFromMidnight() {
+  const now = new Date();
+  const options = { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false };
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  const timeStr = formatter.format(now);
+  const [hour, min] = timeStr.split(':').map(Number);
+  return hour * 60 + min;
+}
 
 function parseNaturalLanguageQuery(text) {
   const normalizedText = text.toLowerCase().trim();
@@ -165,15 +239,6 @@ function parseNaturalLanguageQuery(text) {
         }
       }
     }
-  }
-
-  // Formatting tweaks (Text vs Image Card)
-  const isFormatImage = /(?:show|display|format|style|view|use)\s*(?:as|in|the)?\s*(?:image|card|pic|photo|picture)/.test(lower) || /\b(image|card|pic|photo|picture)\b/.test(lower);
-  const isFormatText = /(?:show|display|format|style|view|use)\s*(?:as|in|the)?\s*(?:text|plain|message|chat)/.test(lower) || /\b(text|plain|message)\b/.test(lower);
-
-  if (isFormatImage || isFormatText) {
-    configAlert = configAlert || {};
-    configAlert.format = isFormatImage ? 'image' : 'text';
   }
 
   // 6. Date extraction
@@ -388,6 +453,58 @@ async function resolveUnifiedQuery(parsed, registeredUser = null) {
   return { error: 'Please specify a section or roll number (e.g. <code>CSE-01</code> or <code>2305074</code>), or register first.' };
 }
 
+async function getFormattedSchedule(cohort, sections, dayInfo) {
+  const { weekday, dateStr } = dayInfo;
+  const timetable = await fetchJSON(cohort.timetable.name);
+  const mainSec = sections[0];
+  const mainSchedule = timetable[mainSec]?.[weekday] || {};
+
+  const combined = { ...mainSchedule };
+
+  if (cohort.electives && cohort.electives.name && sections.length > 1) {
+    try {
+      const electivesTimetable = await fetchJSON(cohort.electives.name);
+      for (let i = 1; i < sections.length; i++) {
+        const electiveKey = sections[i];
+        const electiveSchedule = electivesTimetable[electiveKey]?.[weekday] || {};
+        for (const [slot, slotInfo] of Object.entries(electiveSchedule)) {
+          combined[slot] = {
+            ...slotInfo,
+            isElective: true
+          };
+        }
+      }
+    } catch (e) {
+      console.error('Error loading electives:', e);
+    }
+  }
+
+  const slots = Object.keys(combined);
+  if (slots.length === 0) {
+    return `🎉 <b>No classes scheduled for ${esc(weekday)} (${esc(dateStr)})!</b>\nEnjoy your day off!`;
+  }
+
+  slots.sort((a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b));
+
+  let text = `📅 <b>Schedule for ${esc(weekday)} (${esc(dateStr)})</b>\n`;
+  text += `🏫 <b>Section:</b> <code>${esc(mainSec)}</code> (${esc(cohort.label)})\n`;
+  if (sections.length > 1) {
+    text += `🎯 <b>Electives:</b> ${sections.slice(1).map(s => `<code>${esc(s)}</code>`).join(', ')}\n`;
+  }
+  text += `━━━━━━━━━━━━━━━━━━\n\n`;
+
+  for (const slot of slots) {
+    const info = combined[slot];
+    text += `⏰ <b>${esc(formatTimeSlot(slot))}</b>\n`;
+    text += `📖 <b>${esc(info.subject)}</b>${info.isElective ? ' <i>(Elective)</i>' : ''}\n`;
+    if (info.room) {
+      text += `📍 Room: <code>${esc(info.room)}</code>\n`;
+    }
+    text += `\n`;
+  }
+
+  return text.trim();
+}
 
 async function getWeeklyScheduleText(cohort, sections) {
   const timetable = await fetchJSON(cohort.timetable.name);
@@ -626,13 +743,8 @@ async function handleSettings(chatId) {
     both: '🌟 Both (Summary & Class Alerts)',
     none: '🔕 Muted (No Notifications)'
   };
-  const formatLabels = {
-    text: '💬 Show Normally in Chat',
-    image: '🎴 Show in Card Format (Image)'
-  };
   const type = sub.notificationType || 'digest';
   const offset = sub.alertOffset || 5;
-  const format = sub.timetableFormat || 'text';
 
   const text = `⚙️ <b>Notification & Timetable Settings</b>\n` +
                `━━━━━━━━━━━━━━━━━━\n` +
@@ -641,9 +753,8 @@ async function handleSettings(chatId) {
                `• <b>Class Section:</b> <code>${esc(sub.section)}</code>\n` +
                `• <b>Class Year:</b> ${esc(sub.label)} (Semester ${sub.semester})\n\n` +
                `🔔 <b>How we notify you:</b> ${typeLabels[type]}\n` +
-               `⏰ <b>Class reminder timing:</b> ${offset} minutes before class starts\n` +
-               `🎨 <b>Timetable Display:</b> ${formatLabels[format]}\n\n` +
-               `<i>Tip: Tap the buttons below to change these settings or unlink your profile. You can also chat naturally, for example: "show in card format" or "notify me 10 mins before".</i>`;
+               `⏰ <b>Class reminder timing:</b> ${offset} minutes before class starts\n\n` +
+               `<i>Tip: Tap the buttons below to change these settings or unlink your profile. You can also chat naturally, for example: "notify me 10 mins before class".</i>`;
   return {
     text,
     markup: getSettingsMarkup(sub)
@@ -723,13 +834,8 @@ function getSettingsMarkup(sub) {
     both: 'Both Summary & Alerts',
     none: 'Muted (No Alerts)'
   };
-  const formatLabels = {
-    text: 'Show Normally in Chat',
-    image: 'Card Format'
-  };
   const type = sub.notificationType || 'digest';
   const offset = sub.alertOffset || 5;
-  const format = sub.timetableFormat || 'text';
 
   return {
     inline_keyboard: [
@@ -738,9 +844,6 @@ function getSettingsMarkup(sub) {
       ],
       [
         { text: `⏰ Change Timing: ${offset} mins before`, callback_data: `toggle_offset:${offset}` }
-      ],
-      [
-        { text: `🎨 Change Style: ${formatLabels[format]}`, callback_data: `toggle_format:${format}` }
       ],
       [
         { text: "❌ Unlink Roll Number from Bot", callback_data: "delete_registration" }
@@ -861,15 +964,6 @@ export default async (req) => {
           const { text, markup } = await handleSettings(chatId);
           await tgSendOrEdit(chatId, messageId, text, markup);
         }
-      } else if (action.startsWith('toggle_format:')) {
-        if (sub) {
-          const currentFormat = action.split(':')[1];
-          sub.timetableFormat = currentFormat === 'image' ? 'text' : 'image';
-          sub.updatedAt = new Date().toISOString();
-          await store.setJSON(String(chatId), sub);
-          const { text, markup } = await handleSettings(chatId);
-          await tgSendOrEdit(chatId, messageId, text, markup);
-        }
       }
     } catch (err) {
       console.error('Callback error:', err);
@@ -975,11 +1069,8 @@ export default async (req) => {
         await tgSend(chatId, resolved.error, getMainMenuMarkup());
       } else {
         const targetDay = (arg && parsed.dayInfo) ? parsed.dayInfo : dayInfo;
-        let targetSub = sub;
-        if (parsed.configAlert?.format) {
-          targetSub = { ...sub, timetableFormat: parsed.configAlert.format };
-        }
-        await tgSendSchedule(chatId, targetSub, resolved, targetDay, offset === 0, getScheduleNavigationMarkup(offset === 0));
+        const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, targetDay);
+        await tgSend(chatId, schedule, getScheduleNavigationMarkup(offset === 0));
       }
       return new Response('ok');
     }
@@ -1039,12 +1130,6 @@ export default async (req) => {
               updated = true;
             }
           }
-
-          // Check for format change
-          if (parsed.configAlert.format) {
-            sub.timetableFormat = parsed.configAlert.format;
-            updated = true;
-          }
         }
 
         if (updated) {
@@ -1069,12 +1154,9 @@ export default async (req) => {
           : resolved.error;
         await tgSend(chatId, userFriendlyError, getMainMenuMarkup());
       } else {
+        const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, parsed.dayInfo);
         const isToday = parsed.dayInfo.weekday === getISTDayAndDate(0).weekday;
-        let targetSub = sub;
-        if (parsed.configAlert?.format) {
-          targetSub = { ...sub, timetableFormat: parsed.configAlert.format };
-        }
-        await tgSendSchedule(chatId, targetSub, resolved, parsed.dayInfo, isToday, getScheduleNavigationMarkup(isToday));
+        await tgSend(chatId, schedule, getScheduleNavigationMarkup(isToday));
       }
     } else {
       const unrecognized = `Sorry, I couldn't understand that query. You can ask for schedules (e.g., <i>"wednesday tt"</i>, <i>"tomorrow schedule"</i>, or <i>"CSE-01 schedule"</i>) or adjust settings.\n\n` +

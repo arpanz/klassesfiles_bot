@@ -1,18 +1,96 @@
 import { getStore } from '@netlify/blobs';
-import {
-  fetchJSON,
-  parseTimeToMinutes,
-  formatTimeSlot,
-  esc,
-  getISTDayAndDate,
-  getISTMinutesFromMidnight,
-  tgSend,
-  tgSendPhoto,
-  getScheduleImageBuffer,
-  getFormattedSchedule
-} from './utils.mjs';
+
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const BASE_URL = 'https://klassesfiles.netlify.app';
 
 const getSubStore = () => getStore('subscribers');
+
+async function tgSend(chatId, text) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'HTML'
+    })
+  });
+  return res;
+}
+
+// In-memory cache for the cron execution run
+const jsonCache = {};
+
+async function fetchJSONCached(filename) {
+  if (jsonCache[filename]) return jsonCache[filename];
+  const res = await fetch(`${BASE_URL}/${filename}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${filename}`);
+  const json = await res.json();
+  jsonCache[filename] = json;
+  return json;
+}
+
+function parseTimeToMinutes(slot) {
+  const startPart = slot.split('-')[0].trim();
+  const timeParts = startPart.split('.');
+  let hour = parseInt(timeParts[0], 10);
+  let min = timeParts[1] ? parseInt(timeParts[1], 10) : 0;
+  if (hour >= 1 && hour < 8) {
+    hour += 12;
+  }
+  return hour * 60 + min;
+}
+
+function formatPart(part) {
+  const val = parseFloat(part);
+  let hour = Math.floor(val);
+  let min = Math.round((val - hour) * 100);
+  let suffix = 'AM';
+  if (hour === 12) {
+    suffix = 'PM';
+  } else if (hour >= 1 && hour < 8) {
+    suffix = 'PM';
+  }
+  const minStr = min === 0 ? ':00' : `:${min < 10 ? '0' + min : min}`;
+  return `${hour}${minStr} ${suffix}`;
+}
+
+function formatTimeSlot(slot) {
+  try {
+    const parts = slot.split('-');
+    return `${formatPart(parts[0])} - ${formatPart(parts[1])}`;
+  } catch {
+    return slot;
+  }
+}
+
+function esc(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function getISTDayAndDate() {
+  const options = { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  const parts = formatter.formatToParts(new Date());
+  const weekday = parts.find(p => p.type === 'weekday').value;
+  const day = parts.find(p => p.type === 'day').value;
+  const month = parts.find(p => p.type === 'month').value;
+  const year = parts.find(p => p.type === 'year').value;
+  return { weekday, dateStr: `${day} ${month} ${year}` };
+}
+
+function getISTMinutesFromMidnight() {
+  const now = new Date();
+  const options = { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false };
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  const timeStr = formatter.format(now);
+  const [hour, min] = timeStr.split(':').map(Number);
+  return hour * 60 + min;
+}
 
 export default async (req) => {
   console.log('Class schedule notifications cron job started...');
@@ -33,7 +111,7 @@ export default async (req) => {
 
   let manifest;
   try {
-    manifest = await fetchJSON('manifest.json');
+    manifest = await fetchJSONCached('manifest.json');
   } catch (err) {
     console.error('Error fetching manifest:', err);
     return new Response('Error fetching manifest', { status: 500 });
@@ -60,7 +138,7 @@ export default async (req) => {
       if (!cohort) continue;
 
       // 1. Fetch timetable and load electives
-      const timetable = await fetchJSON(cohort.timetable.name);
+      const timetable = await fetchJSONCached(cohort.timetable.name);
       const sections = sub.sections || [sub.section];
       const mainSec = sections[0];
       const mainSchedule = timetable[mainSec]?.[weekday] || {};
@@ -69,7 +147,7 @@ export default async (req) => {
 
       if (cohort.electives && cohort.electives.name && sections.length > 1) {
         try {
-          const electivesTimetable = await fetchJSON(cohort.electives.name);
+          const electivesTimetable = await fetchJSONCached(cohort.electives.name);
           for (let i = 1; i < sections.length; i++) {
             const electiveKey = sections[i];
             const electiveSchedule = electivesTimetable[electiveKey]?.[weekday] || {};
@@ -96,25 +174,24 @@ export default async (req) => {
       // 2. Process Morning Digest (between 7:25 AM and 8:30 AM IST, exactly once per day)
       if (isDigestWindow && (type === 'digest' || type === 'both')) {
         if (sub.lastDigestDate !== dateStr) {
-          const format = sub.timetableFormat || 'text';
-          let tgRes = null;
+          let text = `☀️ <b>Good Morning, ${esc(sub.firstName || 'Student')}!</b>\n\n`;
+          text += `📅 <b>Your schedule for today (${esc(weekday)}):</b>\n`;
+          text += `🏫 <b>Section:</b> <code>${esc(mainSec)}</code>\n`;
+          text += `━━━━━━━━━━━━━━━━━━\n\n`;
 
-          if (format === 'image') {
-            try {
-              const pngBuffer = await getScheduleImageBuffer(cohort, sections, dayInfo);
-              const caption = `☀️ <b>Good Morning, ${esc(sub.firstName || 'Student')}!</b>\nHere is your schedule card for today.`;
-              tgRes = await tgSendPhoto(chatId, pngBuffer, caption);
-            } catch (e) {
-              console.error(`Failed to send morning digest image to ${chatId}, falling back to text:`, e);
+          for (const slot of slots) {
+            const info = combined[slot];
+            text += `⏰ <b>${esc(formatTimeSlot(slot))}</b>\n`;
+            text += `📖 <b>${esc(info.subject)}</b>${info.isElective ? ' <i>(Elective)</i>' : ''}\n`;
+            if (info.room) {
+              text += `📍 Room: <code>${esc(info.room)}</code>\n`;
             }
+            text += `\n`;
           }
+          
+          text = text.trim();
 
-          if (!tgRes || !tgRes.ok) {
-            let text = `☀️ <b>Good Morning, ${esc(sub.firstName || 'Student')}!</b>\n\n`;
-            text += await getFormattedSchedule(cohort, sections, dayInfo);
-            tgRes = await tgSend(chatId, text);
-          }
-
+          const tgRes = await tgSend(chatId, text);
           if (tgRes.status === 403) {
             console.log(`Sub ${chatId} blocked the bot. Deleting subscription.`);
             await store.delete(chatId);
