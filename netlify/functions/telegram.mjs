@@ -143,9 +143,9 @@ function getISTMinutesFromMidnight() {
 function parseNaturalLanguageQuery(text) {
   const normalizedText = text.toLowerCase().trim();
 
-  // 1. Friendly triggers
-  const isGreeting = /\b(hi|hello|hey|greetings|yo|good\s*morning|good\s*afternoon|good\s*evening)\b/.test(normalizedText);
-  const isThanks = /\b(thanks|thank\s*you|ty|great|awesome|niiice|nice)\b/.test(normalizedText);
+  // 1. Friendly triggers (including Hinglish/Hindi)
+  const isGreeting = /\b(hi|hello|hey|greetings|yo|good\s*morning|good\s*afternoon|good\s*evening|ram\s*ram|namaste|bhai|bhaiya|bro|bhaiyya|namaskar|pranam)\b/.test(normalizedText);
+  const isThanks = /\b(thanks|thank\s*you|thank\s*u|ty|great|awesome|niiice|nice|shukriya|dhanyawad|dhanyavad|sahi\s*h|mast\s*h|sahi\s*hai|mast\s*hai|nice\s*yaar|thx|tq)\b/.test(normalizedText);
 
   // 2. Section extraction with lookahead and time-unit filter
   const sectionMatch = normalizedText.match(/\b(cse|csce|it|etc|csse|cs|ece|ee|me|ce)[-\s]*(\d{1,2})(?!\d)/);
@@ -153,12 +153,12 @@ function parseNaturalLanguageQuery(text) {
   if (sectionMatch) {
     const dept = sectionMatch[1].toUpperCase();
     const num = parseInt(sectionMatch[2], 10);
-
+    
     // Check if the matched digit is followed by a time unit (e.g. "it 2 days", "me 10 mins")
     const matchEndIndex = sectionMatch.index + sectionMatch[0].length;
     const remainingText = normalizedText.substring(matchEndIndex).trim();
     const startsWithTimeUnit = /^(day|days|min|mins|minute|minutes|hour|hours|week|weeks)\b/.test(remainingText);
-
+    
     if (!startsWithTimeUnit) {
       const numStr = num < 10 ? '0' + num : String(num);
       section = `${dept}-${numStr}`;
@@ -181,34 +181,47 @@ function parseNaturalLanguageQuery(text) {
     semester = parseInt(semMatch[1], 10);
   }
 
-  // 5. Alert configuration edits (Jargon-free & robust)
+  // 5. Alert configuration edits (Hinglish/Chatspeak & Jargon-free)
   let configAlert = null;
   const lower = normalizedText;
-  const hasAlertWord = /(notify|notification|alert|remind|reminder|summary|digest|subscribe|unsubscribe|mute|unmute|stop\s*alerts|start\s*alerts|turn\s*on|turn\s*off)/.test(lower) || /\b(5|10|15|20|25|30|45|60|five|ten|fifteen|thirty)\s*(?:mins?|minutes?|m)\b/.test(lower);
+  const hasAlertWord = /(notify|notification|alert|remind|reminder|summary|digest|subscribe|unsubscribe|mute|unmute|stop\s*alerts|start\s*alerts|turn\s*on|turn\s*off|band|chalu|shuru|rok|off|on|dono|both|krdo|krde|kardo|kar\s*do|kar\s*de)/.test(lower) || 
+                       /\b(5|10|15|20|25|30|45|60|five|ten|fifteen|thirty|paanch|panch|das|dass|pandrah|pandra|tees)\s*(?:mins?|minutes?|m|min)\b/.test(lower);
 
   if (hasAlertWord) {
     configAlert = {};
-
+    
     const offsetWordMap = {
       'five': 5, 'ten': 10, 'fifteen': 15, 'twenty': 20, 'twenty-five': 25, 'thirty': 30, 'forty-five': 45, 'sixty': 60,
+      'paanch': 5, 'panch': 5, 'das': 10, 'dass': 10, 'pandrah': 15, 'pandra': 15, 'tees': 30,
       '5': 5, '10': 10, '15': 15, '20': 20, '25': 25, '30': 30, '45': 45, '60': 60
     };
-    const offsetMatch = lower.match(/\b(5|10|15|20|25|30|45|60|five|ten|fifteen|twenty|twenty-five|thirty|forty-five|sixty)\s*(?:mins?|minutes?|m)\b/);
+    
+    // Match "10 mins pehle", "das min phle", etc.
+    const offsetMatch = lower.match(/\b(5|10|15|20|25|30|45|60|five|ten|fifteen|twenty|twenty-five|thirty|forty-five|sixty|paanch|panch|das|dass|pandrah|pandra|tees)\s*(?:mins?|minutes?|m|min)\s*(?:pehle|phle|pahle|plhe|pahar|before|prior)?\b/) || 
+                        lower.match(/(?:pehle|phle|pahle|plhe|before)\s*(5|10|15|20|25|30|45|60|five|ten|fifteen|twenty|twenty-five|thirty|forty-five|sixty|paanch|panch|das|dass|pandrah|pandra|tees)\s*(?:mins?|minutes?|m|min)?\b/);
     if (offsetMatch) {
       configAlert.offset = offsetWordMap[offsetMatch[1]];
     }
 
-    const muteSummaryMatch = /(?:stop|disable|turn\s*off|no|cancel|without)\s*(?:morning|daily)?\s*(?:summary|digest)/.test(lower) || /(?:summary|digest)\s*(?:off|disabled|muted)/.test(lower);
-    const muteClassMatch = /(?:stop|disable|turn\s*off|no|cancel|without)\s*(?:class|classes|reminder|reminders|alert|alerts|timing|offset)/.test(lower) || /(?:class\s*alerts?|reminders?)\s*(?:off|disabled|muted)/.test(lower);
+    const muteSummaryMatch = /(?:stop|disable|turn\s*off|no|cancel|without|band|rok|bandh|off)\s*(?:morning|daily)?\s*(?:summary|digest)/.test(lower) || 
+                             /(?:summary|digest)\s*(?:off|disabled|muted|band|rok|bandh|krdo|krde|kardo|kar\s*do|kar\s*de)/.test(lower);
+                             
+    const muteClassMatch = /(?:stop|disable|turn\s*off|no|cancel|without|band|rok|bandh|off)\s*(?:class|classes|reminder|reminders|alert|alerts|timing|offset)/.test(lower) || 
+                           /(?:class\s*alerts?|reminders?)\s*(?:off|disabled|muted|band|rok|bandh|krdo|krde|kardo|kar\s*do|kar\s*de)/.test(lower);
 
-    const muteAllMatch = /\b(mute|unsub|unsubscribe|stop\s*all|disable\s*all|turn\s*off\s*all|cancel\s*all|deactivate)\b/.test(lower) ||
-      ((/\b(stop|disable|turn\s*off|cancel|off|mute)\b/.test(lower)) && !/(class|classes|summary|digest|daily)/.test(lower));
+    const muteAllMatch = /\b(mute|unsub|unsubscribe|stop\s*all|disable\s*all|turn\s*off\s*all|cancel\s*all|deactivate|sab\s*band|everything\s*off|all\s*off)\b/.test(lower) || 
+                         ((/\b(stop|disable|turn\s*off|cancel|off|mute|band|rok|bandh)\b/.test(lower)) && !/(class|classes|summary|digest|daily)/.test(lower)) ||
+                         /\b(?:alerts?|notifications?)\s*(?:off|band|rok|stop)\s*(?:krdo|kardo|kar\s*do|krde|kar\s*de|karo|kr)\b/.test(lower);
 
-    const enableBothMatch = /\b(both|all|everything)\b/.test(lower) ||
-      (/\b(summary|digest|daily)\b/.test(lower) && /\b(class|classes|reminder|reminders|alert|alerts)\b/.test(lower) && !/(stop|disable|turn\s*off|no|cancel|without|off)/.test(lower));
-
-    const enableSummaryOnlyMatch = /\b(only|just)\s*(?:morning|daily)?\s*(?:summary|digest)/.test(lower) || /(?:summary|digest)\s*(?:only|just)/.test(lower);
-    const enableClassOnlyMatch = /\b(only|just)\s*(?:class|classes|reminder|reminders|alert|alerts)/.test(lower) || /(?:class|classes|reminder|reminders|alert|alerts)\s*(?:only|just)/.test(lower);
+    const enableBothMatch = /\b(both|all|everything|dono|sab)\b/.test(lower) || 
+                            (/\b(summary|digest|daily)\b/.test(lower) && /\b(class|classes|reminder|reminders|alert|alerts)\b/.test(lower) && !/(stop|disable|turn\s*off|no|cancel|without|off|band|rok)/.test(lower));
+                            
+    const enableSummaryOnlyMatch = /\b(only|just)\s*(?:morning|daily)?\s*(?:summary|digest)/.test(lower) || 
+                                   /(?:summary|digest)\s*(?:only|just)/.test(lower) ||
+                                   /^(?:morning\s*summary|daily\s*digest|summary)\s*(?:chalu|on|start)\s*(?:krdo|kardo|kar\s*do|krde|kar\s*de|karo|kr)?$/.test(lower);
+                                   
+    const enableClassOnlyMatch = /\b(only|just)\s*(?:class|classes|reminder|reminders|alert|alerts)/.test(lower) || 
+                                 /(?:class|classes|reminder|reminders|alert|alerts)\s*(?:only|just)/.test(lower);
 
     if (muteAllMatch) {
       configAlert.type = 'none';
@@ -226,14 +239,16 @@ function parseNaturalLanguageQuery(text) {
       configAlert.type = 'class_alert';
     } else {
       const isSummaryMentioned = /\b(summary|digest|daily)\b/.test(lower);
-      const isClassMentioned = /\b(class|classes|reminder|reminders|alert|alerts|offset|mins?|minutes?|m)\b/.test(lower);
+      const isClassMentioned = /\b(class|classes|reminder|reminders|alert|alerts|offset|mins?|minutes?|m|min)\b/.test(lower) || 
+                               /\b(pehle|phle|pahle|plhe)\b/.test(lower);
 
       if (isClassMentioned && !isSummaryMentioned) {
         configAlert.impliedClassAlert = true;
       } else if (isSummaryMentioned && !isClassMentioned) {
         configAlert.type = 'digest';
       } else {
-        const isEnableGeneral = /\b(enable|turn\s*on|start|activate|unmute|subscribe|resume)\b/.test(lower);
+        const isEnableGeneral = /\b(enable|turn\s*on|start|activate|unmute|subscribe|resume|chalu|shuru)\b/.test(lower) || 
+                                /\bon\s*(?:krdo|kardo|kar\s*do|krde|kar\s*de|karo|kr)\b/.test(lower);
         if (isEnableGeneral) {
           configAlert.action = 'enable_general';
         }
@@ -257,6 +272,9 @@ function parseNaturalLanguageQuery(text) {
   const monthDayMatch = normalizedText.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*(\d{1,2})(?:st|nd|rd|th)?\b/);
   // C. Check "14/6" / "14-6" / "14/06" / "14-06"
   const numericDateMatch = normalizedText.match(/\b(\d{1,2})[/\-](\d{1,2})\b/);
+  // D. Check "14 tarikh" / "14 tareekh" / "14 tareek ko" / "tareekh 14" (Hinglish)
+  const tarikhMatch = normalizedText.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:tarikh|tareekh|taareekh|tarik|tareek)\b/) || 
+                      normalizedText.match(/\b(?:tarikh|tareekh|taareekh|tarik|tareek)\s*(\d{1,2})\b/);
 
   if (dayMonthMatch) {
     const day = parseInt(dayMonthMatch[1], 10);
@@ -281,10 +299,20 @@ function parseNaturalLanguageQuery(text) {
       targetDate = new Date(nowIST.getFullYear(), month - 1, day);
       hasExplicitDateOrWeekday = true;
     }
+  } else if (tarikhMatch) {
+    const day = parseInt(tarikhMatch[1] || tarikhMatch[2], 10);
+    if (day >= 1 && day <= 31) {
+      targetDate = new Date(nowIST.getFullYear(), nowIST.getMonth(), day);
+      // Smart shift: if date has passed by more than 1 day in the current month, assume next month
+      if (targetDate.getTime() < nowIST.getTime() - 24 * 60 * 60 * 1000) {
+        targetDate = new Date(nowIST.getFullYear(), nowIST.getMonth() + 1, day);
+      }
+      hasExplicitDateOrWeekday = true;
+    }
   }
 
   // Adjust target date for year transition boundaries
-  if (targetDate) {
+  if (targetDate && !tarikhMatch) {
     if (targetDate.getTime() - nowIST.getTime() < -180 * 24 * 60 * 60 * 1000) {
       targetDate.setFullYear(targetDate.getFullYear() + 1);
     } else if (targetDate.getTime() - nowIST.getTime() > 180 * 24 * 60 * 60 * 1000) {
@@ -305,6 +333,22 @@ function parseNaturalLanguageQuery(text) {
     } else if (/\btomorrow\b/.test(normalizedText)) {
       targetDate = new Date(nowIST.getTime() + 24 * 60 * 60 * 1000);
       hasExplicitDateOrWeekday = true;
+    } else if (/\bparso(?:n)?\b/.test(normalizedText)) {
+      // Hinglish day after tomorrow
+      targetDate = new Date(nowIST.getTime() + 2 * 24 * 60 * 60 * 1000);
+      hasExplicitDateOrWeekday = true;
+    } else if (/\btarso\b/.test(normalizedText)) {
+      // Hinglish in 3 days
+      targetDate = new Date(nowIST.getTime() + 3 * 24 * 60 * 60 * 1000);
+      hasExplicitDateOrWeekday = true;
+    } else if (/\bkal\b/.test(normalizedText)) {
+      // Hinglish kal = tomorrow
+      targetDate = new Date(nowIST.getTime() + 24 * 60 * 60 * 1000);
+      hasExplicitDateOrWeekday = true;
+    } else if (/\baaj\b/.test(normalizedText)) {
+      // Hinglish aaj = today
+      targetDate = nowIST;
+      hasExplicitDateOrWeekday = true;
     } else {
       const inDaysMatch = normalizedText.match(/\bin\s*(\d+)\s*days?\b/) || normalizedText.match(/\b(\d+)\s*days?\s*from\s*now\b/);
       if (inDaysMatch) {
@@ -313,13 +357,33 @@ function parseNaturalLanguageQuery(text) {
         hasExplicitDateOrWeekday = true;
       } else {
         const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-        const weekdayMatch = normalizedText.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
-
+        
+        // English long/short & Hindi long/short weekdays mapping
+        const weekdayMap = {
+          'sunday': 0, 'sun': 0,
+          'monday': 1, 'mon': 1,
+          'tuesday': 2, 'tue': 2, 'tues': 2,
+          'wednesday': 3, 'wed': 3,
+          'thursday': 4, 'thu': 4, 'thur': 4, 'thurs': 4,
+          'friday': 5, 'fri': 5,
+          'saturday': 6, 'sat': 6,
+          'somwar': 1, 'som': 1,
+          'mangalwar': 2, 'mangal': 2,
+          'budhwar': 3, 'budh': 3,
+          'guruwar': 4, 'guru': 4, 'veerwar': 4, 'veer': 4,
+          'shukrawar': 5, 'shukra': 5,
+          'shaniwar': 6, 'shani': 6,
+          'raviwar': 0, 'ravi': 0, 'itwar': 0
+        };
+        const weekdayKeys = Object.keys(weekdayMap).join('|');
+        const weekdayRegex = new RegExp('\\b(' + weekdayKeys + ')\\b');
+        const weekdayMatch = normalizedText.match(weekdayRegex);
+        
         if (weekdayMatch) {
-          const targetDayIdx = daysOfWeek.indexOf(weekdayMatch[1]);
+          const targetDayIdx = weekdayMap[weekdayMatch[1]];
           const currentDayIdx = nowIST.getDay();
           let offset = targetDayIdx - currentDayIdx;
-          const isNext = /\bnext\b/.test(normalizedText);
+          const isNext = /\bnext\b/.test(normalizedText) || /\bagla\b/.test(normalizedText) || /\bagli\b/.test(normalizedText);
           if (offset < 0 || (offset === 0 && isNext)) {
             offset += 7;
           }
@@ -345,7 +409,7 @@ function parseNaturalLanguageQuery(text) {
   const monthVal = parts.find(p => p.type === 'month').value;
   const yearVal = parts.find(p => p.type === 'year').value;
 
-  const isTimetableQuery = section || rollNo || hasExplicitDateOrWeekday || /\b(timetable|tt|schedule|classes|class)\b/.test(normalizedText);
+  const isTimetableQuery = section || rollNo || hasExplicitDateOrWeekday || /\b(timetable|tt|schedule|classes|class|lecture|lectures|period|periods|dikhao|batao|btao|bhejo|kya\s*h|kya\s*hai|hai\s*kya|h\s*kya|chale|chalega)\b/.test(normalizedText);
 
   return {
     isGreeting,
@@ -1078,16 +1142,16 @@ export default async (req) => {
     // Natural Language Query Processing
     const parsed = parseNaturalLanguageQuery(text);
 
-    // A. Check for conversational responses first
-    if (parsed.isGreeting) {
-      const greet = `👋 <b>Hello there!</b>\n\nI am the KampusVibes Timetable Bot. I can show you class timetables and send daily notifications.\n\nHow can I help you today?`;
-      await tgSend(chatId, greet, getMainMenuMarkup());
-      return new Response('ok');
-    }
-
+    // A. Check for conversational responses first (Thanks takes precedence over general Greetings)
     if (parsed.isThanks) {
       const thanks = `😊 <b>You're welcome!</b>\n\nLet me know if you need to query any other schedule or change your settings!`;
       await tgSend(chatId, thanks, getMainMenuMarkup());
+      return new Response('ok');
+    }
+
+    if (parsed.isGreeting) {
+      const greet = `👋 <b>Hello there!</b>\n\nI am the KampusVibes Timetable Bot. I can show you class timetables and send daily notifications.\n\nHow can I help you today?`;
+      await tgSend(chatId, greet, getMainMenuMarkup());
       return new Response('ok');
     }
 
