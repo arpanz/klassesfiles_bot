@@ -115,8 +115,8 @@ function getISTDayAndDate(offsetDays = 0) {
 function parseNaturalLanguageQuery(text) {
   const normalizedText = text.toLowerCase().trim();
 
-  // 1. Section extraction
-  const sectionMatch = normalizedText.match(/\b(cse|csce|it|etc|csse|cs|ece|ee|me|ce)[-\s]*(\d{1,2})\b/);
+  // 1. Section extraction (using lookahead instead of strict word boundary at end)
+  const sectionMatch = normalizedText.match(/\b(cse|csce|it|etc|csse|cs|ece|ee|me|ce)[-\s]*(\d{1,2})(?!\d)/);
   let section = null;
   if (sectionMatch) {
     const dept = sectionMatch[1].toUpperCase();
@@ -129,14 +129,14 @@ function parseNaturalLanguageQuery(text) {
   const rollMatch = normalizedText.match(/\b(\d{6,8})\b/);
   let rollNo = rollMatch ? rollMatch[1] : null;
 
-  // 3. Cohort / Batch / Sem hints
+  // 3. Cohort / Batch / Sem hints (removed strict boundary before sem)
   let batch = null;
   let semester = null;
   const yearMatch = normalizedText.match(/\b(202\d)\b/);
   if (yearMatch) {
     batch = parseInt(yearMatch[1], 10);
   }
-  const semMatch = normalizedText.match(/\b(\d)(?:st|nd|rd|th)?\s*sem\b/) || normalizedText.match(/\bsem(?:ester)?[-\s]*(\d)\b/);
+  const semMatch = normalizedText.match(/\b(\d)(?:st|nd|rd|th)?\s*sem/) || normalizedText.match(/(?:\b|\d)sem(?:ester)?[-\s]*(\d)/);
   if (semMatch) {
     semester = parseInt(semMatch[1], 10);
   }
