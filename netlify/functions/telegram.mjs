@@ -1,4 +1,5 @@
 import { getStore } from '@netlify/blobs';
+import { Resvg } from '@resvg/resvg-js';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const BASE_URL = 'https://klassesfiles.netlify.app';
@@ -110,6 +111,159 @@ function formatTimeSlot(slot) {
   } catch {
     return slot;
   }
+}
+
+async function tgSendPhoto(chatId, photoBuffer, caption = '', replyMarkup = null) {
+  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`;
+  const formData = new FormData();
+  formData.append('chat_id', chatId);
+  
+  const blob = new Blob([photoBuffer], { type: 'image/png' });
+  formData.append('photo', blob, 'timetable.png');
+  
+  if (caption) {
+    formData.append('caption', caption);
+    formData.append('parse_mode', 'HTML');
+  }
+  if (replyMarkup) {
+    formData.append('reply_markup', JSON.stringify(replyMarkup));
+  }
+  
+  const res = await fetch(url, {
+    method: 'POST',
+    body: formData
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} from sendPhoto: ${await res.text()}`);
+  }
+}
+
+function generateScheduleSvg(weekday, dateStr, section, label, slots, combined) {
+  const rowHeight = 80;
+  const headerHeight = 150;
+  const footerHeight = 60;
+  const height = slots.length === 0 ? 350 : (headerHeight + slots.length * rowHeight + footerHeight);
+  
+  let svg = `<svg width="700" height="${height}" viewBox="0 0 700 ${height}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#0f0c20;stop-opacity:1" />
+        <stop offset="50%" style="stop-color:#15102a;stop-opacity:1" />
+        <stop offset="100%" style="stop-color:#06040d;stop-opacity:1" />
+      </linearGradient>
+      
+      <linearGradient id="headerGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" style="stop-color:#7f5af0;stop-opacity:1" />
+        <stop offset="100%" style="stop-color:#2cb67d;stop-opacity:1" />
+      </linearGradient>
+      
+      <linearGradient id="rowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" style="stop-color:#1e1b4b;stop-opacity:0.6" />
+        <stop offset="100%" style="stop-color:#311042;stop-opacity:0.2" />
+      </linearGradient>
+    </defs>
+    
+    <rect width="700" height="${height}" rx="20" fill="url(#bgGrad)" stroke="#2d264d" stroke-width="2"/>
+    
+    <path d="M 20 0 L 680 0 A 20 20 0 0 1 700 20 L 700 30 L 0 30 L 0 20 A 20 20 0 0 1 20 0 Z" fill="url(#headerGrad)" opacity="0.8"/>
+    
+    <text x="40" y="75" font-family="system-ui, sans-serif" font-size="28" font-weight="800" fill="#ffffff">📅 Schedule for ${esc(weekday)}</text>
+    <text x="40" y="105" font-family="system-ui, sans-serif" font-size="15" font-weight="500" fill="#94a3b8">${esc(dateStr)}</text>
+    
+    <rect x="520" y="55" width="140" height="40" rx="10" fill="#2d264d" stroke="#4c3e80" stroke-width="1"/>
+    <text x="590" y="80" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="#2cb67d" text-anchor="middle">🏫 ${esc(section)}</text>
+    <text x="590" y="112" font-family="system-ui, sans-serif" font-size="11" font-weight="500" fill="#94a3b8" text-anchor="middle">${esc(label)}</text>
+    
+    <line x1="40" y1="135" x2="660" y2="135" stroke="#2d264d" stroke-width="1.5"/>
+  `;
+  
+  if (slots.length === 0) {
+    svg += `
+      <circle cx="350" cy="220" r="40" fill="#1e1b4b" stroke="#7f5af0" stroke-width="1.5"/>
+      <text x="350" y="226" font-family="system-ui, sans-serif" font-size="24" text-anchor="middle">🎉</text>
+      <text x="350" y="285" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#ffffff" text-anchor="middle">No classes scheduled for today!</text>
+      <text x="350" y="305" font-family="system-ui, sans-serif" font-size="13" font-weight="400" fill="#94a3b8" text-anchor="middle">Enjoy your day off!</text>
+    `;
+  } else {
+    let y = headerHeight;
+    slots.forEach((slot, index) => {
+      const info = combined[slot];
+      const formattedTime = formatTimeSlot(slot);
+      
+      svg += `
+        <g transform="translate(0, ${y})">
+          <rect x="40" y="5" width="620" height="70" rx="12" fill="url(#rowGrad)" stroke="#2d264d" stroke-width="1"/>
+          <rect x="40" y="5" width="6" height="70" rx="3" fill="${info.isElective ? '#ff8c00' : '#7f5af0'}"/>
+          <text x="65" y="44" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="#94a3b8">⏰ ${formattedTime}</text>
+          <text x="280" y="45" font-family="system-ui, sans-serif" font-size="16" font-weight="700" fill="#ffffff">${esc(info.subject)}${info.isElective ? ' (E)' : ''}</text>
+          ${info.room ? `
+            <rect x="540" y="24" width="100" height="30" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+            <text x="590" y="43" font-family="system-ui, sans-serif" font-size="12" font-weight="700" fill="#2cb67d" text-anchor="middle">📍 ${esc(info.room)}</text>
+          ` : ''}
+        </g>
+      `;
+      y += rowHeight;
+    });
+  }
+  
+  svg += `
+    <line x1="40" y1="${height - 50}" x2="660" y2="${height - 50}" stroke="#2d264d" stroke-dasharray="4 4" stroke-width="1"/>
+    <text x="350" y="${height - 25}" font-family="system-ui, sans-serif" font-size="11" font-weight="400" fill="#94a3b8" text-anchor="middle">KampusVibes Timetable Bot • Generated automatically</text>
+  </svg>`;
+  
+  return svg;
+}
+
+async function getScheduleImageBuffer(cohort, sections, dayInfo) {
+  const { weekday, dateStr } = dayInfo;
+  const timetable = await fetchJSON(cohort.timetable.name);
+  const mainSec = sections[0];
+  const mainSchedule = timetable[mainSec]?.[weekday] || {};
+
+  const combined = { ...mainSchedule };
+
+  if (cohort.electives && cohort.electives.name && sections.length > 1) {
+    try {
+      const electivesTimetable = await fetchJSON(cohort.electives.name);
+      for (let i = 1; i < sections.length; i++) {
+        const electiveKey = sections[i];
+        const electiveSchedule = electivesTimetable[electiveKey]?.[weekday] || {};
+        for (const [slot, slotInfo] of Object.entries(electiveSchedule)) {
+          combined[slot] = {
+            ...slotInfo,
+            isElective: true
+          };
+        }
+      }
+    } catch (e) {
+      console.error('Error loading electives for image:', e);
+    }
+  }
+
+  const slots = Object.keys(combined);
+  slots.sort((a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b));
+
+  const svg = generateScheduleSvg(weekday, dateStr, mainSec, cohort.label, slots, combined);
+  const resvg = new Resvg(svg, {
+    fitTo: { mode: 'original' }
+  });
+  return resvg.render().asPng();
+}
+
+async function tgSendSchedule(chatId, sub, resolved, targetDay, isToday, navigationMarkup) {
+  const format = sub?.timetableFormat || 'text';
+  if (format === 'image') {
+    try {
+      const pngBuffer = await getScheduleImageBuffer(resolved.cohort, resolved.sections, targetDay);
+      await tgSendPhoto(chatId, pngBuffer, `📅 <b>Schedule for ${esc(targetDay.weekday)} (${esc(targetDay.dateStr)})</b>`, navigationMarkup);
+      return;
+    } catch (e) {
+      console.error('Failed to generate/send schedule image, falling back to text:', e);
+    }
+  }
+  
+  const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, targetDay);
+  await tgSend(chatId, schedule, navigationMarkup);
 }
 
 function esc(str) {
@@ -239,6 +393,15 @@ function parseNaturalLanguageQuery(text) {
         }
       }
     }
+  }
+
+  // Formatting tweaks (Text vs Image Card)
+  const isFormatImage = /(?:show|display|format|style|view|use)\s*(?:as|in|the)?\s*(?:image|card|pic|photo|picture)/.test(lower) || /\b(image|card|pic|photo|picture)\b/.test(lower);
+  const isFormatText = /(?:show|display|format|style|view|use)\s*(?:as|in|the)?\s*(?:text|plain|message|chat)/.test(lower) || /\b(text|plain|message)\b/.test(lower);
+
+  if (isFormatImage || isFormatText) {
+    configAlert = configAlert || {};
+    configAlert.format = isFormatImage ? 'image' : 'text';
   }
 
   // 6. Date extraction
@@ -743,8 +906,13 @@ async function handleSettings(chatId) {
     both: '🌟 Both (Summary & Class Alerts)',
     none: '🔕 Muted (No Notifications)'
   };
+  const formatLabels = {
+    text: '📝 Plain Text Messages',
+    image: '🎨 Beautiful Image Cards'
+  };
   const type = sub.notificationType || 'digest';
   const offset = sub.alertOffset || 5;
+  const format = sub.timetableFormat || 'text';
 
   const text = `⚙️ <b>Notification & Timetable Settings</b>\n` +
                `━━━━━━━━━━━━━━━━━━\n` +
@@ -753,8 +921,9 @@ async function handleSettings(chatId) {
                `• <b>Class Section:</b> <code>${esc(sub.section)}</code>\n` +
                `• <b>Class Year:</b> ${esc(sub.label)} (Semester ${sub.semester})\n\n` +
                `🔔 <b>How we notify you:</b> ${typeLabels[type]}\n` +
-               `⏰ <b>Class reminder timing:</b> ${offset} minutes before class starts\n\n` +
-               `<i>Tip: Tap the buttons below to change these settings or unlink your profile. You can also chat naturally, for example: "notify me 10 mins before class".</i>`;
+               `⏰ <b>Class reminder timing:</b> ${offset} minutes before class starts\n` +
+               `🎨 <b>Timetable Display:</b> ${formatLabels[format]}\n\n` +
+               `<i>Tip: Tap the buttons below to change these settings or unlink your profile. You can also chat naturally, for example: "use image card format" or "notify me 10 mins before".</i>`;
   return {
     text,
     markup: getSettingsMarkup(sub)
@@ -834,8 +1003,13 @@ function getSettingsMarkup(sub) {
     both: 'Both Summary & Alerts',
     none: 'Muted (No Alerts)'
   };
+  const formatLabels = {
+    text: 'Text Format',
+    image: 'Image Cards'
+  };
   const type = sub.notificationType || 'digest';
   const offset = sub.alertOffset || 5;
+  const format = sub.timetableFormat || 'text';
 
   return {
     inline_keyboard: [
@@ -844,6 +1018,9 @@ function getSettingsMarkup(sub) {
       ],
       [
         { text: `⏰ Change Timing: ${offset} mins before`, callback_data: `toggle_offset:${offset}` }
+      ],
+      [
+        { text: `🎨 Change Style: ${formatLabels[format]}`, callback_data: `toggle_format:${format}` }
       ],
       [
         { text: "❌ Unlink Roll Number from Bot", callback_data: "delete_registration" }
@@ -964,6 +1141,15 @@ export default async (req) => {
           const { text, markup } = await handleSettings(chatId);
           await tgSendOrEdit(chatId, messageId, text, markup);
         }
+      } else if (action.startsWith('toggle_format:')) {
+        if (sub) {
+          const currentFormat = action.split(':')[1];
+          sub.timetableFormat = currentFormat === 'image' ? 'text' : 'image';
+          sub.updatedAt = new Date().toISOString();
+          await store.setJSON(String(chatId), sub);
+          const { text, markup } = await handleSettings(chatId);
+          await tgSendOrEdit(chatId, messageId, text, markup);
+        }
       }
     } catch (err) {
       console.error('Callback error:', err);
@@ -1069,8 +1255,7 @@ export default async (req) => {
         await tgSend(chatId, resolved.error, getMainMenuMarkup());
       } else {
         const targetDay = (arg && parsed.dayInfo) ? parsed.dayInfo : dayInfo;
-        const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, targetDay);
-        await tgSend(chatId, schedule, getScheduleNavigationMarkup(offset === 0));
+        await tgSendSchedule(chatId, sub, resolved, targetDay, offset === 0, getScheduleNavigationMarkup(offset === 0));
       }
       return new Response('ok');
     }
@@ -1130,6 +1315,12 @@ export default async (req) => {
               updated = true;
             }
           }
+
+          // Check for format change
+          if (parsed.configAlert.format) {
+            sub.timetableFormat = parsed.configAlert.format;
+            updated = true;
+          }
         }
 
         if (updated) {
@@ -1154,9 +1345,8 @@ export default async (req) => {
           : resolved.error;
         await tgSend(chatId, userFriendlyError, getMainMenuMarkup());
       } else {
-        const schedule = await getFormattedSchedule(resolved.cohort, resolved.sections, parsed.dayInfo);
         const isToday = parsed.dayInfo.weekday === getISTDayAndDate(0).weekday;
-        await tgSend(chatId, schedule, getScheduleNavigationMarkup(isToday));
+        await tgSendSchedule(chatId, sub, resolved, parsed.dayInfo, isToday, getScheduleNavigationMarkup(isToday));
       }
     } else {
       const unrecognized = `Sorry, I couldn't understand that query. You can ask for schedules (e.g., <i>"wednesday tt"</i>, <i>"tomorrow schedule"</i>, or <i>"CSE-01 schedule"</i>) or adjust settings.\n\n` +
