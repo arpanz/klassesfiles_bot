@@ -1,4 +1,13 @@
 import { Resvg } from '@resvg/resvg-js';
+import { fileURLToPath } from 'url';
+import path from 'path';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const fontReg = path.join(__dirname, 'fonts', 'Roboto-Regular.ttf');
+const fontBold = path.join(__dirname, 'fonts', 'Roboto-Bold.ttf');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const BASE_URL = 'https://klassesfiles.netlify.app';
@@ -145,12 +154,12 @@ export function generateScheduleSvg(weekday, dateStr, section, label, slots, com
     
     <path d="M 20 0 L 680 0 A 20 20 0 0 1 700 20 L 700 30 L 0 30 L 0 20 A 20 20 0 0 1 20 0 Z" fill="url(#headerGrad)" opacity="0.8"/>
     
-    <text x="40" y="75" font-family="system-ui, sans-serif" font-size="28" font-weight="800" fill="#ffffff">📅 Schedule for ${esc(weekday)}</text>
-    <text x="40" y="105" font-family="system-ui, sans-serif" font-size="15" font-weight="500" fill="#94a3b8">${esc(dateStr)}</text>
+    <text x="40" y="75" font-family="Roboto, sans-serif" font-size="28" font-weight="800" fill="#ffffff">📅 Schedule for ${esc(weekday)}</text>
+    <text x="40" y="105" font-family="Roboto, sans-serif" font-size="15" font-weight="500" fill="#94a3b8">${esc(dateStr)}</text>
     
     <rect x="520" y="55" width="140" height="40" rx="10" fill="#2d264d" stroke="#4c3e80" stroke-width="1"/>
-    <text x="590" y="80" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="#2cb67d" text-anchor="middle">🏫 ${esc(section)}</text>
-    <text x="590" y="112" font-family="system-ui, sans-serif" font-size="11" font-weight="500" fill="#94a3b8" text-anchor="middle">${esc(label)}</text>
+    <text x="590" y="80" font-family="Roboto, sans-serif" font-size="14" font-weight="700" fill="#2cb67d" text-anchor="middle">🏫 ${esc(section)}</text>
+    <text x="590" y="112" font-family="Roboto, sans-serif" font-size="11" font-weight="500" fill="#94a3b8" text-anchor="middle">${esc(label)}</text>
     
     <line x1="40" y1="135" x2="660" y2="135" stroke="#2d264d" stroke-width="1.5"/>
   `;
@@ -158,9 +167,9 @@ export function generateScheduleSvg(weekday, dateStr, section, label, slots, com
   if (slots.length === 0) {
     svg += `
       <circle cx="350" cy="220" r="40" fill="#1e1b4b" stroke="#7f5af0" stroke-width="1.5"/>
-      <text x="350" y="226" font-family="system-ui, sans-serif" font-size="24" text-anchor="middle">🎉</text>
-      <text x="350" y="285" font-family="system-ui, sans-serif" font-size="16" font-weight="600" fill="#ffffff" text-anchor="middle">No classes scheduled for today!</text>
-      <text x="350" y="305" font-family="system-ui, sans-serif" font-size="13" font-weight="400" fill="#94a3b8" text-anchor="middle">Enjoy your day off!</text>
+      <text x="350" y="226" font-family="Roboto, sans-serif" font-size="24" text-anchor="middle">🎉</text>
+      <text x="350" y="285" font-family="Roboto, sans-serif" font-size="16" font-weight="600" fill="#ffffff" text-anchor="middle">No classes scheduled for today!</text>
+      <text x="350" y="305" font-family="Roboto, sans-serif" font-size="13" font-weight="400" fill="#94a3b8" text-anchor="middle">Enjoy your day off!</text>
     `;
   } else {
     let y = headerHeight;
@@ -172,11 +181,11 @@ export function generateScheduleSvg(weekday, dateStr, section, label, slots, com
         <g transform="translate(0, ${y})">
           <rect x="40" y="5" width="620" height="70" rx="12" fill="url(#rowGrad)" stroke="#2d264d" stroke-width="1"/>
           <rect x="40" y="5" width="6" height="70" rx="3" fill="${info.isElective ? '#ff8c00' : '#7f5af0'}"/>
-          <text x="65" y="44" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="#94a3b8">⏰ ${formattedTime}</text>
-          <text x="280" y="45" font-family="system-ui, sans-serif" font-size="16" font-weight="700" fill="#ffffff">${esc(info.subject)}${info.isElective ? ' (E)' : ''}</text>
+          <text x="65" y="44" font-family="Roboto, sans-serif" font-size="14" font-weight="700" fill="#94a3b8">⏰ ${formattedTime}</text>
+          <text x="280" y="45" font-family="Roboto, sans-serif" font-size="16" font-weight="700" fill="#ffffff">${esc(info.subject)}${info.isElective ? ' (E)' : ''}</text>
           ${info.room ? `
             <rect x="540" y="24" width="100" height="30" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
-            <text x="590" y="43" font-family="system-ui, sans-serif" font-size="12" font-weight="700" fill="#2cb67d" text-anchor="middle">📍 ${esc(info.room)}</text>
+            <text x="590" y="43" font-family="Roboto, sans-serif" font-size="12" font-weight="700" fill="#2cb67d" text-anchor="middle">📍 ${esc(info.room)}</text>
           ` : ''}
         </g>
       `;
@@ -186,7 +195,7 @@ export function generateScheduleSvg(weekday, dateStr, section, label, slots, com
   
   svg += `
     <line x1="40" y1="${height - 50}" x2="660" y2="${height - 50}" stroke="#2d264d" stroke-dasharray="4 4" stroke-width="1"/>
-    <text x="350" y="${height - 25}" font-family="system-ui, sans-serif" font-size="11" font-weight="400" fill="#94a3b8" text-anchor="middle">KampusVibes Timetable Bot • Generated automatically</text>
+    <text x="350" y="${height - 25}" font-family="Roboto, sans-serif" font-size="11" font-weight="400" fill="#94a3b8" text-anchor="middle">KampusVibes Timetable Bot • Generated automatically</text>
   </svg>`;
   
   return svg;
@@ -222,9 +231,20 @@ export async function getScheduleImageBuffer(cohort, sections, dayInfo) {
   slots.sort((a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b));
 
   const svg = generateScheduleSvg(weekday, dateStr, mainSec, cohort.label, slots, combined);
-  const resvg = new Resvg(svg, {
+  
+  const resvgOptions = {
     fitTo: { mode: 'original' }
-  });
+  };
+  
+  if (fs.existsSync(fontReg) && fs.existsSync(fontBold)) {
+    resvgOptions.font = {
+      fontFiles: [fontReg, fontBold],
+      loadSystemFonts: false,
+      defaultFontFamily: 'Roboto'
+    };
+  }
+  
+  const resvg = new Resvg(svg, resvgOptions);
   return resvg.render().asPng();
 }
 

@@ -4,3 +4,4 @@
 [functions]
   node_bundler = "esbuild"
   external_node_modules = ["@resvg/resvg-js"]
+  included_files = ["netlify/functions/fonts/**"]
