@@ -143,21 +143,32 @@ function getISTMinutesFromMidnight() {
 function parseNaturalLanguageQuery(text) {
   const normalizedText = text.toLowerCase().trim();
 
-  // 1. Section extraction (using lookahead instead of strict word boundary at end)
+  // 1. Friendly triggers
+  const isGreeting = /\b(hi|hello|hey|greetings|yo|good\s*morning|good\s*afternoon|good\s*evening)\b/.test(normalizedText);
+  const isThanks = /\b(thanks|thank\s*you|ty|great|awesome|niiice|nice)\b/.test(normalizedText);
+
+  // 2. Section extraction with lookahead and time-unit filter
   const sectionMatch = normalizedText.match(/\b(cse|csce|it|etc|csse|cs|ece|ee|me|ce)[-\s]*(\d{1,2})(?!\d)/);
   let section = null;
   if (sectionMatch) {
     const dept = sectionMatch[1].toUpperCase();
     const num = parseInt(sectionMatch[2], 10);
-    const numStr = num < 10 ? '0' + num : String(num);
-    section = `${dept}-${numStr}`;
+    
+    const matchEndIndex = sectionMatch.index + sectionMatch[0].length;
+    const remainingText = normalizedText.substring(matchEndIndex).trim();
+    const startsWithTimeUnit = /^(day|days|min|mins|minute|minutes|hour|hours|week|weeks)\b/.test(remainingText);
+    
+    if (!startsWithTimeUnit) {
+      const numStr = num < 10 ? '0' + num : String(num);
+      section = `${dept}-${numStr}`;
+    }
   }
 
-  // 2. Roll number extraction (6 to 8 digits)
+  // 3. Roll number extraction (6 to 8 digits)
   const rollMatch = normalizedText.match(/\b(\d{6,8})\b/);
   let rollNo = rollMatch ? rollMatch[1] : null;
 
-  // 3. Cohort / Batch / Sem hints
+  // 4. Cohort / Batch / Sem hints
   let batch = null;
   let semester = null;
   const yearMatch = normalizedText.match(/\b(202\d)\b/);
@@ -169,69 +180,62 @@ function parseNaturalLanguageQuery(text) {
     semester = parseInt(semMatch[1], 10);
   }
 
-  // 4. Date extraction
+  // 5. Alert configuration edits (Jargon-free NLP mapping)
+  let configAlert = null;
+  if (/(stop|turn\s*off|disable|unsubscribe|off)\s*(alerts|notifications|notify|remind|me)?/.test(normalizedText)) {
+    configAlert = { type: 'none' };
+  } else if (/(morning\s*summary|morning\s*digest|summary\s*only|digest\s*only)/.test(normalizedText)) {
+    configAlert = { type: 'digest' };
+  } else if (/(both|summary\s*and\s*alerts)/.test(normalizedText)) {
+    configAlert = { type: 'both' };
+  }
+
+  const offsetMatch = normalizedText.match(/\b(5|10|15)\s*(?:min|mins|minute|minutes)\b/);
+  if (offsetMatch) {
+    const offsetVal = parseInt(offsetMatch[1], 10);
+    if (!configAlert) configAlert = {};
+    configAlert.offset = offsetVal;
+    configAlert.type = configAlert.type || 'class_alert';
+  }
+
+  // 6. Date extraction
   let targetDate = null;
   const getISTNow = () => {
     return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   };
   const nowIST = getISTNow();
 
-  if (/\btoday\b/.test(normalizedText)) {
+  if (/\bday\s*after\s*tomorrow\b/.test(normalizedText)) {
+    targetDate = new Date(nowIST.getTime() + 2 * 24 * 60 * 60 * 1000);
+  } else if (/\byesterday\b/.test(normalizedText)) {
+    targetDate = new Date(nowIST.getTime() - 24 * 60 * 60 * 1000);
+  } else if (/\btoday\b/.test(normalizedText)) {
     targetDate = nowIST;
   } else if (/\btomorrow\b/.test(normalizedText)) {
     targetDate = new Date(nowIST.getTime() + 24 * 60 * 60 * 1000);
   } else {
-    const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const weekdayMatch = normalizedText.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
-    
-    if (weekdayMatch) {
-      const targetDayIdx = daysOfWeek.indexOf(weekdayMatch[1]);
-      const currentDayIdx = nowIST.getDay();
-      let offset = targetDayIdx - currentDayIdx;
-      const isNext = /\bnext\b/.test(normalizedText);
-      if (offset < 0 || (offset === 0 && isNext)) {
-        offset += 7;
-      }
-      if (isNext && offset > 0 && offset < 7) {
-        offset += 7;
-      }
-      targetDate = new Date(nowIST.getTime() + offset * 24 * 60 * 60 * 1000);
-    }
-  }
-
-  if (!targetDate) {
-    const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-    const numericDateMatch = normalizedText.match(/\b(\d{1,2})[-\/](\d{1,2})(?:[-\/](\d{2,4}))?\b/);
-    
-    if (numericDateMatch) {
-      const day = parseInt(numericDateMatch[1], 10);
-      const month = parseInt(numericDateMatch[2], 10) - 1;
-      let year = numericDateMatch[3] ? parseInt(numericDateMatch[3], 10) : nowIST.getFullYear();
-      if (year < 100) year += 2000;
-      targetDate = new Date(year, month, day);
+    // Check "in X days" or "X days from now"
+    const inDaysMatch = normalizedText.match(/\bin\s*(\d+)\s*days?\b/) || normalizedText.match(/\b(\d+)\s*days?\s*from\s*now\b/);
+    if (inDaysMatch) {
+      const days = parseInt(inDaysMatch[1], 10);
+      targetDate = new Date(nowIST.getTime() + days * 24 * 60 * 60 * 1000);
     } else {
-      let alphaDateMatch = normalizedText.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/);
-      let day = null;
-      let monthStr = null;
+      // Check weekday: "monday", "tuesday", etc.
+      const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const weekdayMatch = normalizedText.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
       
-      if (alphaDateMatch) {
-        day = parseInt(alphaDateMatch[1], 10);
-        monthStr = alphaDateMatch[2];
-      } else {
-        alphaDateMatch = normalizedText.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*(\d{1,2})(?:st|nd|rd|th)?\b/);
-        if (alphaDateMatch) {
-          monthStr = alphaDateMatch[1];
-          day = parseInt(alphaDateMatch[2], 10);
+      if (weekdayMatch) {
+        const targetDayIdx = daysOfWeek.indexOf(weekdayMatch[1]);
+        const currentDayIdx = nowIST.getDay();
+        let offset = targetDayIdx - currentDayIdx;
+        const isNext = /\bnext\b/.test(normalizedText);
+        if (offset < 0 || (offset === 0 && isNext)) {
+          offset += 7;
         }
-      }
-
-      if (day !== null && monthStr !== null) {
-        const monthIdx = months.findIndex(m => monthStr.startsWith(m));
-        if (monthIdx !== -1) {
-          const yearMatch = normalizedText.match(/\b(202\d|203\d)\b/);
-          const year = yearMatch ? parseInt(yearMatch[1], 10) : nowIST.getFullYear();
-          targetDate = new Date(year, monthIdx, day);
+        if (isNext && offset > 0 && offset < 7) {
+          offset += 7;
         }
+        targetDate = new Date(nowIST.getTime() + offset * 24 * 60 * 60 * 1000);
       }
     }
   }
@@ -249,10 +253,13 @@ function parseNaturalLanguageQuery(text) {
   const yearVal = parts.find(p => p.type === 'year').value;
 
   return {
+    isGreeting,
+    isThanks,
     section,
     rollNo,
     dayInfo: { weekday, dateStr: `${dayVal} ${monthVal} ${yearVal}` },
-    cohortHint: (batch || semester) ? { batch, semester } : null
+    cohortHint: (batch || semester) ? { batch, semester } : null,
+    configAlert
   };
 }
 
@@ -600,7 +607,7 @@ async function handleRegister(chatId, rollNo, fromUser) {
            `• <b>Roll Number:</b> <code>${esc(roll)}</code>\n` +
            `• <b>Section:</b> <code>${esc(mainSection)}</code>\n` +
            `• <b>Batch:</b> ${esc(cohort.label)}\n` +
-           `• <b>Notifications:</b> Morning Digest (7:30 AM IST)\n\n` +
+           `• <b>Notifications:</b> Morning Summary (7:30 AM IST)\n\n` +
            `Try <code>/today</code> or use the menu below!`;
   } catch (e) {
     return `❌ Registration failed: ${esc(e.message)}`;
@@ -619,8 +626,8 @@ async function handleSubscribe(chatId, enable) {
   await store.setJSON(String(chatId), sub);
 
   return enable 
-    ? '🔔 <b>Notifications Enabled!</b>\nI will send you your class schedule every morning at 7:30 AM IST.'
-    : '🔕 <b>Notifications Disabled!</b>\nYou will no longer receive any alerts. You can still query manually.';
+    ? '🔔 <b>Alerts Enabled!</b>\nI will send you your class schedule every morning at 7:30 AM IST.'
+    : '🔕 <b>Alerts Disabled!</b>\nYou will no longer receive any notifications. You can still query manually.';
 }
 
 async function handleSettings(chatId) {
@@ -634,10 +641,10 @@ async function handleSettings(chatId) {
   }
 
   const typeLabels = {
-    digest: '📅 Morning Digest',
+    digest: '📅 Morning Summary Only',
     class_alert: '⏰ Before Each Class',
-    both: '🌟 Digest & Class Alerts',
-    none: '🔕 Off'
+    both: '🌟 Both (Summary & Alerts)',
+    none: '🔕 Alerts Turned Off'
   };
   const type = sub.notificationType || 'digest';
   const offset = sub.alertOffset || 5;
@@ -648,8 +655,8 @@ async function handleSettings(chatId) {
                `• <b>Roll Number:</b> <code>${esc(sub.rollNo)}</code>\n` +
                `• <b>Section:</b> <code>${esc(sub.section)}</code>\n` +
                `• <b>Batch:</b> ${esc(sub.label)} (Sem ${sub.semester})\n\n` +
-               `• <b>Alert Mode:</b> <b>${typeLabels[type]}</b>\n` +
-               `• <b>Class Offset:</b> <b>${offset} minutes</b>\n\n` +
+               `• <b>Alert Style:</b> <b>${typeLabels[type]}</b>\n` +
+               `• <b>Remind Time:</b> <b>${offset} minutes before class</b>\n\n` +
                `Use the buttons below to customize your alerts:`;
   return {
     text,
@@ -661,7 +668,7 @@ async function handleDeleteRegistration(chatId) {
   const store = getSubStore();
   await store.delete(String(chatId));
   return {
-    text: '❌ <b>Registration Deleted</b>\n\nYour roll number and settings have been cleared from our database. You will no longer receive any notifications.',
+    text: '❌ <b>Roll Number Unlinked Successfully</b>\n\nYour roll number and settings have been cleared from our database. You will no longer receive any notifications.',
     markup: { remove_keyboard: true }
   };
 }
@@ -675,9 +682,9 @@ function getHelpText() {
          `• <i>"show me tt of cse-01 3rd sem today"</i>\n` +
          `• <i>"what classes does it-2 have tomorrow?"</i>\n` +
          `• <i>"cse-03 next monday"</i>\n` +
-         `• <i>"tell me about 2305074 schedule for 20 june"</i>\n\n` +
-         `🔔 <b>Alerts:</b>\n` +
-         `• Use the menu below to subscribe/unsubscribe from morning notifications (7:30 AM IST).`;
+         `• <i>"tell me about 2305074 schedule in 2 days"</i>\n\n` +
+         `🔔 <b>Alerts Configuration:</b>\n` +
+         `• Type naturally to tweak settings: <i>"notify me 10 mins before class"</i> or <i>"disable alerts"</i>.`;
 }
 
 function getMainMenuMarkup() {
@@ -724,10 +731,10 @@ function getSubPageMarkup() {
 
 function getSettingsMarkup(sub) {
   const typeLabels = {
-    digest: '📅 Digest',
-    class_alert: '⏰ Class Alert',
+    digest: '📅 Morning Summary',
+    class_alert: '⏰ Before Each Class',
     both: '🌟 Both',
-    none: '🔕 Off'
+    none: '🔕 Turn Off Alerts'
   };
   const type = sub.notificationType || 'digest';
   const offset = sub.alertOffset || 5;
@@ -735,13 +742,13 @@ function getSettingsMarkup(sub) {
   return {
     inline_keyboard: [
       [
-        { text: `🔔 Mode: ${typeLabels[type]}`, callback_data: `toggle_type:${type}` }
+        { text: `🔔 Style: ${typeLabels[type]}`, callback_data: `toggle_type:${type}` }
       ],
       [
-        { text: `⏱️ Offset: ${offset} mins`, callback_data: `toggle_offset:${offset}` }
+        { text: `⏱️ Remind: ${offset} mins before`, callback_data: `toggle_offset:${offset}` }
       ],
       [
-        { text: "❌ Delete My Registration", callback_data: "delete_registration" }
+        { text: "❌ Unlink Roll Number", callback_data: "delete_registration" }
       ],
       [
         { text: "🏠 Main Menu", callback_data: "menu" }
@@ -970,9 +977,39 @@ export default async (req) => {
       return new Response('ok');
     }
 
-    // Natural Language Query (No slash command)
+    // Natural Language Query Processing
     const parsed = parseNaturalLanguageQuery(text);
     
+    // A. Check for conversational responses first
+    if (parsed.isGreeting) {
+      const greet = `👋 <b>Hello there!</b>\n\nI am the KampusVibes Timetable Bot. I can show you class timetables and send daily notifications.\n\nHow can I help you today?`;
+      await tgSend(chatId, greet, getMainMenuMarkup());
+      return new Response('ok');
+    }
+
+    if (parsed.isThanks) {
+      const thanks = `😊 <b>You're welcome!</b>\n\nLet me know if you need to query any other schedule or change your settings!`;
+      await tgSend(chatId, thanks, getMainMenuMarkup());
+      return new Response('ok');
+    }
+
+    // B. Check for NLP Alert Configuration Edits
+    if (parsed.configAlert) {
+      if (!sub) {
+        await tgSend(chatId, `❌ You are not registered yet. Please link your roll number first using <code>/register &lt;roll_number&gt;</code> to set up custom alerts.`, getMainMenuMarkup());
+      } else {
+        if (parsed.configAlert.type) sub.notificationType = parsed.configAlert.type;
+        if (parsed.configAlert.offset) sub.alertOffset = parsed.configAlert.offset;
+        sub.updatedAt = new Date().toISOString();
+        await store.setJSON(String(chatId), sub);
+
+        const { text: settingText, markup } = await handleSettings(chatId);
+        await tgSend(chatId, `✅ <b>Alert Settings Updated!</b>\n\n` + settingText, markup);
+      }
+      return new Response('ok');
+    }
+
+    // C. Check for NLP Timetable Queries
     if (parsed.section || parsed.rollNo) {
       const resolved = await resolveUnifiedQuery(parsed, sub);
       if (resolved.error) {
