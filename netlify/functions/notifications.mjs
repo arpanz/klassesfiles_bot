@@ -93,6 +93,20 @@ function getISTMinutesFromMidnight() {
 }
 
 export default async (req) => {
+  const url = new URL(req.url);
+  if (url.searchParams.get('debug') === 'true') {
+    const store = getSubStore();
+    const list = await store.list();
+    const subs = [];
+    for (const blob of list.blobs) {
+      const sub = await store.get(blob.key, { type: 'json' });
+      if (sub) subs.push(sub);
+    }
+    return new Response(JSON.stringify(subs, null, 2), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   console.log('Class schedule notifications cron job started...');
 
   const store = getSubStore();
