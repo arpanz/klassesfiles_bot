@@ -153,12 +153,12 @@ function parseNaturalLanguageQuery(text) {
   if (sectionMatch) {
     const dept = sectionMatch[1].toUpperCase();
     const num = parseInt(sectionMatch[2], 10);
-    
+
     // Check if the matched digit is followed by a time unit (e.g. "it 2 days", "me 10 mins")
     const matchEndIndex = sectionMatch.index + sectionMatch[0].length;
     const remainingText = normalizedText.substring(matchEndIndex).trim();
     const startsWithTimeUnit = /^(day|days|min|mins|minute|minutes|hour|hours|week|weeks)\b/.test(remainingText);
-    
+
     if (!startsWithTimeUnit) {
       const numStr = num < 10 ? '0' + num : String(num);
       section = `${dept}-${numStr}`;
@@ -188,7 +188,7 @@ function parseNaturalLanguageQuery(text) {
 
   if (hasAlertWord) {
     configAlert = {};
-    
+
     const offsetWordMap = {
       'five': 5, 'ten': 10, 'fifteen': 15, 'twenty': 20, 'twenty-five': 25, 'thirty': 30, 'forty-five': 45, 'sixty': 60,
       '5': 5, '10': 10, '15': 15, '20': 20, '25': 25, '30': 30, '45': 45, '60': 60
@@ -201,12 +201,12 @@ function parseNaturalLanguageQuery(text) {
     const muteSummaryMatch = /(?:stop|disable|turn\s*off|no|cancel|without)\s*(?:morning|daily)?\s*(?:summary|digest)/.test(lower) || /(?:summary|digest)\s*(?:off|disabled|muted)/.test(lower);
     const muteClassMatch = /(?:stop|disable|turn\s*off|no|cancel|without)\s*(?:class|classes|reminder|reminders|alert|alerts|timing|offset)/.test(lower) || /(?:class\s*alerts?|reminders?)\s*(?:off|disabled|muted)/.test(lower);
 
-    const muteAllMatch = /\b(mute|unsub|unsubscribe|stop\s*all|disable\s*all|turn\s*off\s*all|cancel\s*all|deactivate)\b/.test(lower) || 
-                         ((/\b(stop|disable|turn\s*off|cancel|off|mute)\b/.test(lower)) && !/(class|classes|summary|digest|daily)/.test(lower));
+    const muteAllMatch = /\b(mute|unsub|unsubscribe|stop\s*all|disable\s*all|turn\s*off\s*all|cancel\s*all|deactivate)\b/.test(lower) ||
+      ((/\b(stop|disable|turn\s*off|cancel|off|mute)\b/.test(lower)) && !/(class|classes|summary|digest|daily)/.test(lower));
 
-    const enableBothMatch = /\b(both|all|everything)\b/.test(lower) || 
-                            (/\b(summary|digest|daily)\b/.test(lower) && /\b(class|classes|reminder|reminders|alert|alerts)\b/.test(lower) && !/(stop|disable|turn\s*off|no|cancel|without|off)/.test(lower));
-                            
+    const enableBothMatch = /\b(both|all|everything)\b/.test(lower) ||
+      (/\b(summary|digest|daily)\b/.test(lower) && /\b(class|classes|reminder|reminders|alert|alerts)\b/.test(lower) && !/(stop|disable|turn\s*off|no|cancel|without|off)/.test(lower));
+
     const enableSummaryOnlyMatch = /\b(only|just)\s*(?:morning|daily)?\s*(?:summary|digest)/.test(lower) || /(?:summary|digest)\s*(?:only|just)/.test(lower);
     const enableClassOnlyMatch = /\b(only|just)\s*(?:class|classes|reminder|reminders|alert|alerts)/.test(lower) || /(?:class|classes|reminder|reminders|alert|alerts)\s*(?:only|just)/.test(lower);
 
@@ -314,7 +314,7 @@ function parseNaturalLanguageQuery(text) {
       } else {
         const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
         const weekdayMatch = normalizedText.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
-        
+
         if (weekdayMatch) {
           const targetDayIdx = daysOfWeek.indexOf(weekdayMatch[1]);
           const currentDayIdx = nowIST.getDay();
@@ -389,12 +389,12 @@ async function resolveUnifiedQuery(parsed, registeredUser = null) {
     let resolvedSections = null;
 
     if (cohortHint) {
-      resolvedCohort = manifest.cohorts.find(c => 
-        (cohortHint.batch && c.batch === cohortHint.batch) || 
+      resolvedCohort = manifest.cohorts.find(c =>
+        (cohortHint.batch && c.batch === cohortHint.batch) ||
         (cohortHint.semester && c.semester === cohortHint.semester)
       );
     }
-    
+
     if (!resolvedCohort && registeredUser) {
       resolvedCohort = manifest.cohorts.find(c => c.batch === registeredUser.batch);
     }
@@ -405,7 +405,7 @@ async function resolveUnifiedQuery(parsed, registeredUser = null) {
         if (timetable[section]) {
           resolvedSections = [section];
         }
-      } catch {}
+      } catch { }
     }
 
     if (!resolvedSections) {
@@ -417,7 +417,7 @@ async function resolveUnifiedQuery(parsed, registeredUser = null) {
             resolvedSections = [section];
             break;
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -431,7 +431,7 @@ async function resolveUnifiedQuery(parsed, registeredUser = null) {
               resolvedSections = [section];
               break;
             }
-          } catch {}
+          } catch { }
         }
       }
     }
@@ -700,12 +700,12 @@ async function handleRegister(chatId, rollNo, fromUser) {
     });
 
     return `✅ <b>Registration Successful!</b>\n\n` +
-           `👤 <b>Name:</b> ${esc(fromUser.first_name)}\n` +
-           `• <b>Roll Number:</b> <code>${esc(roll)}</code>\n` +
-           `• <b>Section:</b> <code>${esc(mainSection)}</code>\n` +
-           `• <b>Batch:</b> ${esc(cohort.label)}\n` +
-           `• <b>Notifications:</b> Morning Summary (7:30 AM IST)\n\n` +
-           `Try <code>/today</code> or use the menu below!`;
+      `👤 <b>Name:</b> ${esc(fromUser.first_name)}\n` +
+      `• <b>Roll Number:</b> <code>${esc(roll)}</code>\n` +
+      `• <b>Section:</b> <code>${esc(mainSection)}</code>\n` +
+      `• <b>Batch:</b> ${esc(cohort.label)}\n` +
+      `• <b>Notifications:</b> Morning Summary (7:30 AM IST)\n\n` +
+      `Try <code>/today</code> or use the menu below!`;
   } catch (e) {
     return `❌ Registration failed: ${esc(e.message)}`;
   }
@@ -722,7 +722,7 @@ async function handleSubscribe(chatId, enable) {
   sub.updatedAt = new Date().toISOString();
   await store.setJSON(String(chatId), sub);
 
-  return enable 
+  return enable
     ? '🔔 <b>Alerts Enabled!</b>\nI will send you your class schedule every morning at 7:30 AM IST.'
     : '🔕 <b>Alerts Disabled!</b>\nYou will no longer receive any notifications. You can still query manually.';
 }
@@ -747,14 +747,14 @@ async function handleSettings(chatId) {
   const offset = sub.alertOffset || 5;
 
   const text = `⚙️ <b>Notification & Timetable Settings</b>\n` +
-               `━━━━━━━━━━━━━━━━━━\n` +
-               `👤 <b>Student Name:</b> ${esc(sub.firstName || 'Student')}\n` +
-               `• <b>Roll Number:</b> <code>${esc(sub.rollNo)}</code>\n` +
-               `• <b>Class Section:</b> <code>${esc(sub.section)}</code>\n` +
-               `• <b>Class Year:</b> ${esc(sub.label)} (Semester ${sub.semester})\n\n` +
-               `🔔 <b>How we notify you:</b> ${typeLabels[type]}\n` +
-               `⏰ <b>Class reminder timing:</b> ${offset} minutes before class starts\n\n` +
-               `<i>Tip: Tap the buttons below to change these settings or unlink your profile. You can also chat naturally, for example: "notify me 10 mins before class".</i>`;
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `👤 <b>Student Name:</b> ${esc(sub.firstName || 'Student')}\n` +
+    `• <b>Roll Number:</b> <code>${esc(sub.rollNo)}</code>\n` +
+    `• <b>Class Section:</b> <code>${esc(sub.section)}</code>\n` +
+    `• <b>Class Year:</b> ${esc(sub.label)} (Semester ${sub.semester})\n\n` +
+    `🔔 <b>How we notify you:</b> ${typeLabels[type]}\n` +
+    `⏰ <b>Class reminder timing:</b> ${offset} minutes before class starts\n\n` +
+    `<i>Tip: Tap the buttons below to change these settings or unlink your profile. You can also chat naturally, for example: "notify me 10 mins before class".</i>`;
   return {
     text,
     markup: getSettingsMarkup(sub)
@@ -772,17 +772,17 @@ async function handleDeleteRegistration(chatId) {
 
 function getHelpText() {
   return `🎓 <b>KampusVibes Timetable Bot Guide</b>\n\n` +
-         `I can display your timetable and send daily morning notifications or class-by-class alerts.\n\n` +
-         `⚙️ <b>Setup:</b>\n` +
-         `• <code>/register &lt;roll_number&gt;</code> - Link your roll number (e.g. <code>/register 2305074</code>)\n\n` +
-         `📅 <b>Queries (Try typing naturally!):</b>\n` +
-         `• <i>"wednesday tt"</i> or <i>"14 june"</i> (displays your own schedule once linked!)\n` +
-         `• <i>"show me tt of cse-01 today"</i>\n` +
-         `• <i>"what classes does it-02 have tomorrow?"</i>\n` +
-         `• <i>"2305074 next monday"</i>\n` +
-         `• <i>"tell me about CSE-03 schedule in 2 days"</i>\n\n` +
-         `🔔 <b>Alerts Configuration:</b>\n` +
-         `• Type naturally to tweak settings: <i>"notify me 10 mins before class"</i>, <i>"turn off daily summary"</i>, or <i>"disable alerts"</i>.`;
+    `I can display your timetable and send daily morning notifications or class-by-class alerts.\n\n` +
+    `⚙️ <b>Setup:</b>\n` +
+    `• <code>/register &lt;roll_number&gt;</code> - Link your roll number (e.g. <code>/register 2305074</code>)\n\n` +
+    `📅 <b>Queries (Try typing naturally!):</b>\n` +
+    `• <i>"wednesday tt"</i> or <i>"14 june"</i> (displays your own schedule once linked!)\n` +
+    `• <i>"show me tt of cse-01 today"</i>\n` +
+    `• <i>"what classes does it-02 have tomorrow?"</i>\n` +
+    `• <i>"2305074 next monday"</i>\n` +
+    `• <i>"tell me about CSE-03 schedule in 2 days"</i>\n\n` +
+    `🔔 <b>Alerts Configuration:</b>\n` +
+    `• Type naturally to tweak settings: <i>"notify me 10 mins before class"</i>, <i>"turn off daily summary"</i>, or <i>"disable alerts"</i>.`;
 }
 
 function getMainMenuMarkup() {
@@ -808,7 +808,7 @@ function getScheduleNavigationMarkup(isToday = true) {
   return {
     inline_keyboard: [
       [
-        isToday 
+        isToday
           ? { text: "⏭️ Tomorrow's Schedule", callback_data: "tomorrow" }
           : { text: "📅 Today's Schedule", callback_data: "today" },
         { text: "🏠 Main Menu", callback_data: "menu" }
@@ -978,7 +978,7 @@ export default async (req) => {
 
   const chatId = m.chat.id;
   const rawText = m.text.trim();
-  
+
   // Map reply keyboard button text to mock command text
   let text = rawText;
   if (rawText === "📅 Today's Schedule") text = "/today";
@@ -1002,14 +1002,14 @@ export default async (req) => {
       } catch (e) {
         console.error('Error setting commands:', e);
       }
-      
+
       const welcome = `🎓 <b>Welcome to KampusVibes Timetable Bot!</b>\n\n` +
-                      `I can look up your daily class schedule and send you morning notifications or class-by-class alerts.\n\n` +
-                      `To start, please link your roll number using <code>/register &lt;roll_number&gt;</code> (e.g. <code>/register 2305074</code>).`;
+        `I can look up your daily class schedule and send you morning notifications or class-by-class alerts.\n\n` +
+        `To start, please link your roll number using <code>/register &lt;roll_number&gt;</code> (e.g. <code>/register 2305074</code>).`;
       await tgSend(chatId, welcome, getMainReplyKeyboard());
       return new Response('ok');
     }
-    
+
     if (cmd === '/register') {
       const responseText = await handleRegister(chatId, arg, m.from);
       await tgSend(chatId, responseText, getMainReplyKeyboard());
@@ -1061,10 +1061,10 @@ export default async (req) => {
     if (cmd === '/today' || cmd === '/tomorrow') {
       const offset = cmd === '/today' ? 0 : 1;
       const dayInfo = getISTDayAndDate(offset);
-      
+
       const parsed = arg ? parseNaturalLanguageQuery(text) : {};
       const resolved = await resolveUnifiedQuery(parsed, sub);
-      
+
       if (resolved.error) {
         await tgSend(chatId, resolved.error, getMainMenuMarkup());
       } else {
@@ -1077,7 +1077,7 @@ export default async (req) => {
 
     // Natural Language Query Processing
     const parsed = parseNaturalLanguageQuery(text);
-    
+
     // A. Check for conversational responses first
     if (parsed.isGreeting) {
       const greet = `👋 <b>Hello there!</b>\n\nI am the KampusVibes Timetable Bot. I can show you class timetables and send daily notifications.\n\nHow can I help you today?`;
@@ -1119,7 +1119,7 @@ export default async (req) => {
               sub.notificationType = 'class_alert';
             }
           }
-          
+
           // Check for explicit type update
           if (parsed.configAlert.type) {
             sub.notificationType = parsed.configAlert.type;
@@ -1149,7 +1149,7 @@ export default async (req) => {
     if (parsed.isTimetableQuery) {
       const resolved = await resolveUnifiedQuery(parsed, sub);
       if (resolved.error) {
-        const userFriendlyError = resolved.error.includes('register first') 
+        const userFriendlyError = resolved.error.includes('register first')
           ? `🔍 <b>Profile Not Linked</b>\n\nI see you want to check the schedule for ${parsed.dayInfo.weekday}, but your profile is not linked yet.\n\nLink your roll number using <code>/register &lt;roll_number&gt;</code> (e.g. <code>/register 2305074</code>) or query a specific section directly (e.g. <code>CSE-01 Wednesday</code>).`
           : resolved.error;
         await tgSend(chatId, userFriendlyError, getMainMenuMarkup());
@@ -1160,7 +1160,7 @@ export default async (req) => {
       }
     } else {
       const unrecognized = `Sorry, I couldn't understand that query. You can ask for schedules (e.g., <i>"wednesday tt"</i>, <i>"tomorrow schedule"</i>, or <i>"CSE-01 schedule"</i>) or adjust settings.\n\n` +
-                           `Here is the main menu to query details manually:`;
+        `Here is the main menu to query details manually:`;
       await tgSend(chatId, unrecognized, getMainMenuMarkup());
     }
 
@@ -1168,7 +1168,7 @@ export default async (req) => {
     console.error('Message routing error:', err);
     try {
       await tgSend(chatId, `⚠️ An internal error occurred. Please try again later.`);
-    } catch {}
+    } catch { }
   }
 
   return new Response('ok');
