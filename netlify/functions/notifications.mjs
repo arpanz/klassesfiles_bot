@@ -135,8 +135,8 @@ export default async (req) => {
   let alertSent = 0;
   let deletedCount = 0;
 
-  // We send the morning digest around 7:30 AM IST (450 minutes from midnight)
-  const isDigestWindow = currentMinutes >= 448 && currentMinutes <= 452;
+  // We send the morning digest between 7:25 AM and 8:30 AM IST (445 to 510 minutes from midnight)
+  const isDigestWindow = currentMinutes >= 445 && currentMinutes <= 510;
 
   for (const blob of list.blobs) {
     const chatId = blob.key;
@@ -183,67 +183,83 @@ export default async (req) => {
       // Sort slots
       slots.sort((a, b) => parseTimeToMinutes(a) - parseTimeToMinutes(b));
 
-      // 2. Process Morning Digest (at 7:30 AM IST)
+      let subUpdated = false;
+
+      // 2. Process Morning Digest (between 7:25 AM and 8:30 AM IST, exactly once per day)
       if (isDigestWindow && (type === 'digest' || type === 'both')) {
-        let text = `☀️ <b>Good Morning, ${esc(sub.firstName || 'Student')}!</b>\n\n`;
-        text += `📅 <b>Your schedule for today (${esc(weekday)}):</b>\n`;
-        text += `🏫 <b>Section:</b> <code>${esc(mainSec)}</code>\n`;
-        text += `━━━━━━━━━━━━━━━━━━\n\n`;
+        if (sub.lastDigestDate !== dateStr) {
+          let text = `☀️ <b>Good Morning, ${esc(sub.firstName || 'Student')}!</b>\n\n`;
+          text += `📅 <b>Your schedule for today (${esc(weekday)}):</b>\n`;
+          text += `🏫 <b>Section:</b> <code>${esc(mainSec)}</code>\n`;
+          text += `━━━━━━━━━━━━━━━━━━\n\n`;
 
-        for (const slot of slots) {
-          const info = combined[slot];
-          text += `⏰ <b>${esc(formatTimeSlot(slot))}</b>\n`;
-          text += `📖 <b>${esc(info.subject)}</b>${info.isElective ? ' <i>(Elective)</i>' : ''}\n`;
-          if (info.room) {
-            text += `📍 Room: <code>${esc(info.room)}</code>\n`;
+          for (const slot of slots) {
+            const info = combined[slot];
+            text += `⏰ <b>${esc(formatTimeSlot(slot))}</b>\n`;
+            text += `📖 <b>${esc(info.subject)}</b>${info.isElective ? ' <i>(Elective)</i>' : ''}\n`;
+            if (info.room) {
+              text += `📍 Room: <code>${esc(info.room)}</code>\n`;
+            }
+            text += `\n`;
           }
-          text += `\n`;
-        }
-        
-        text = text.trim();
+          
+          text = text.trim();
 
-        const tgRes = await tgSend(chatId, text);
-        if (tgRes.status === 403) {
-          console.log(`Sub ${chatId} blocked the bot. Deleting subscription.`);
-          await store.delete(chatId);
-          deletedCount++;
-          continue;
-        } else if (tgRes.ok) {
-          digestSent++;
+          const tgRes = await tgSend(chatId, text);
+          if (tgRes.status === 403) {
+            console.log(`Sub ${chatId} blocked the bot. Deleting subscription.`);
+            await store.delete(chatId);
+            deletedCount++;
+            continue;
+          } else if (tgRes.ok) {
+            digestSent++;
+            sub.lastDigestDate = dateStr;
+            subUpdated = true;
+          }
         }
       }
 
-      // 3. Process Class-by-Class Alerts (Triggered near targetOffset minutes before class)
+      // 3. Process Class-by-Class Alerts (Triggered near targetOffset minutes before class, exactly once per day per class)
       if (type === 'class_alert' || type === 'both') {
         const offset = sub.alertOffset || 5;
+        sub.sentAlerts = sub.sentAlerts || {};
 
         for (const slot of slots) {
           const classStart = parseTimeToMinutes(slot);
           const targetAlertTime = classStart - offset;
 
-          // Jitter-proof matching window (covers +/- 2 minutes around target alert time)
-          if (Math.abs(targetAlertTime - currentMinutes) <= 2) {
-            const info = combined[slot];
-            const startTimeStr = formatTimeSlot(slot).split(' - ')[0];
+          // Jitter-proof matching window tolerates up to 12 minutes of delay/jitter
+          if (currentMinutes >= targetAlertTime && currentMinutes <= targetAlertTime + 12) {
+            if (sub.sentAlerts[slot] !== dateStr) {
+              const info = combined[slot];
+              const startTimeStr = formatTimeSlot(slot).split(' - ')[0];
 
-            let text = `⏰ <b>Upcoming Class Alert!</b>\n\n`;
-            text += `📖 Your class <b>${esc(info.subject)}</b> starts in <b>${offset} minutes</b> (at ${esc(startTimeStr)})!\n`;
-            if (info.room) {
-              text += `📍 Room: <code>${esc(info.room)}</code>\n`;
-            }
-            text += `🏫 Section: <code>${esc(mainSec)}</code>`;
+              let text = `⏰ <b>Upcoming Class Alert!</b>\n\n`;
+              text += `📖 Your class <b>${esc(info.subject)}</b> starts in <b>${offset} minutes</b> (at ${esc(startTimeStr)})!\n`;
+              if (info.room) {
+                text += `📍 Room: <code>${esc(info.room)}</code>\n`;
+              }
+              text += `🏫 Section: <code>${esc(mainSec)}</code>`;
 
-            const tgRes = await tgSend(chatId, text);
-            if (tgRes.status === 403) {
-              console.log(`Sub ${chatId} blocked the bot. Deleting subscription.`);
-              await store.delete(chatId);
-              deletedCount++;
-              break; // exit slots loop for this deleted user
-            } else if (tgRes.ok) {
-              alertSent++;
+              const tgRes = await tgSend(chatId, text);
+              if (tgRes.status === 403) {
+                console.log(`Sub ${chatId} blocked the bot. Deleting subscription.`);
+                await store.delete(chatId);
+                deletedCount++;
+                subUpdated = false;
+                break; // exit slots loop for this deleted user
+              } else if (tgRes.ok) {
+                alertSent++;
+                sub.sentAlerts[slot] = dateStr;
+                subUpdated = true;
+              }
             }
           }
         }
+      }
+
+      if (subUpdated) {
+        await store.setJSON(chatId, sub);
       }
 
     } catch (subErr) {
